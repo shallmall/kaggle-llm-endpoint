@@ -355,7 +355,7 @@ if BUCKET_MIN:
 STATE = {"url": None, "requests": 0, "tokens": 0, "prefix_hits": 0, "prefix_tokens_reused": 0, "prefill_s": 0.0,
          "snap_hits": 0, "snap_parks": 0, "snap_pins": 0, "snap_entries": 0, "snap_bytes": 0, "snap_s": 0.0,
          "steps": 0, "step_tokens": 0}
-T = {k: tok.convert_tokens_to_ids(k) for k in ("<think>", "", "", "<arg_key>", "</arg_key>",
+T = {k: tok.convert_tokens_to_ids(k) for k in ("<think>", "", "", "", "<arg_key>", "</arg_key>",
                                                 "<arg_value>", "</arg_value>", "<|user|>", "<|observation|>", "<|assistant|>",
                                                 "<|image|>", "<|begin_of_image|>", "<|end_of_image|>")}
 STOP_IDS = set(eos) | {T["<|user|>"], T["<|observation|>"]}
@@ -630,7 +630,7 @@ def parse_tool_call(body, tools):
 
 class TokenStream:
     """Incremental token -> (kind, text/tool) events: kind in {"thinking", "text", "tool"}; partial multibyte text
-    is held back until it decodes cleanly; tool-call tokens are buffered until </tool_call>."""
+    is held back until it decodes cleanly; tool-call tokens are buffered until ."""
 
     def __init__(self, tools, mode="thinking"):
         self.tools, self.mode, self.buf, self.tool_buf = tools, mode, [], []
@@ -639,10 +639,487 @@ class TokenStream:
         if t in STOP_IDS:
             return self.flush()
         if self.mode == "tool":
-            if t == T["</tool_call>"]:
+            if t == T[""]:
                 self.mode = "text"; call = parse_tool_call(self.tool_buf, self.tools); self.tool_buf = []
                 return [("tool", call)]
             self.tool_buf.append(t); return []
         if t == T[""] and self.mode == "thinking":
             ev = self.flush(); self.mode = "text"; return ev
-        if t == T["
+        if t == T[""] and self.mode == "text":
+            self.mode = "tool"; self.tool_buf = []; return self.flush()
+        self.buf.append(t)
+        try:
+            text = tok.decode(self.buf)
+            self.buf = []
+            return [("text", text)] if text else []
+        except Exception:
+            return []
+
+    def flush(self):
+        evs = []
+        if self.mode == "tool" and self.tool_buf:
+            call = parse_tool_call(self.tool_buf, self.tools)
+            evs.append(("tool", call))
+            self.tool_buf = []
+        if self.buf:
+            try:
+                text = tok.decode(self.buf)
+                if text:
+                    evs.append(("text", text))
+            except Exception:
+                pass
+            self.buf = []
+        return evs
+
+
+# ---- prompt building
+def build_prompt(messages, tools=None, effort=None):
+    """Chat messages -> (token_ids list, imgs dict or None). Handles text and image content blocks."""
+    effort = effort or DEFAULT_EFFORT
+    tmpl_msgs = []
+    imgs = {}
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                btype = block.get("type", "")
+                if btype == "text":
+                    parts.append(block.get("text", ""))
+                elif btype == "image_url":
+                    u = block.get("image_url", {})
+                    url = u.get("url", "") if isinstance(u, dict) else u
+                    if url.startswith("data:"):
+                        img_bytes = base64.b64decode(url.split(",", 1)[1])
+                    elif url.startswith("http"):
+                        img_bytes = urllib.request.urlopen(url, timeout=30).read()
+                    else:
+                        continue
+                    n_tok, emb = embed_image(img_bytes)
+                    sig = _img_sig(img_bytes)
+                    imgs[sig] = (n_tok, emb)
+                    parts.append("<|image|>" * n_tok)
+                elif btype == "image":
+                    img_bytes = _image_bytes(block)
+                    n_tok, emb = embed_image(img_bytes)
+                    sig = _img_sig(img_bytes)
+                    imgs[sig] = (n_tok, emb)
+                    parts.append("<|image|>" * n_tok)
+            content = "\n".join(parts)
+        tmpl_msgs.append({"role": role, "content": content})
+    rendered = tok.apply_chat_template(tmpl_msgs, tokenize=False, add_generation_prompt=True,
+                                       reasoning_effort=effort, tools=tools)
+    token_ids = tok(rendered, add_special_tokens=False).input_ids
+    return token_ids, (imgs if imgs else None)
+
+
+# ---- HTTP server
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def _auth_ok(self):
+        auth = self.headers.get("Authorization", "")
+        return auth == f"Bearer {API_KEY}"
+
+    def _read_body(self):
+        length = int(self.headers.get("Content-Length", 0))
+        if length == 0:
+            return {}
+        return json.loads(self.rfile.read(length))
+
+    def _send_json(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_error(self, code, msg):
+        self._send_json(code, {"error": {"message": msg, "type": "error"}})
+
+    def _sse_headers(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+    def _sse_write(self, data):
+        self.wfile.write(f"data: {json.dumps(data)}\n\n".encode())
+        self.wfile.flush()
+
+    def _sse_done(self):
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+
+    def do_GET(self):
+        if self.path in ("/v1/models", "/models"):
+            if not self._auth_ok():
+                self._send_error(401, "Invalid API key")
+                return
+            self._send_json(200, {"object": "list", "data": [{"id": MODEL, "object": "model", "owned_by": "glm"}]})
+        elif self.path in ("/health", "/"):
+            self._send_json(200, {"status": "ok", "model": MODEL})
+        else:
+            self._send_error(404, "Not found")
+
+    def do_POST(self):
+        if not self._auth_ok():
+            self._send_error(401, "Invalid API key")
+            return
+        if self.path in ("/v1/chat/completions", "/chat/completions"):
+            self._handle_openai_chat()
+        elif self.path in ("/v1/messages", "/messages"):
+            self._handle_anthropic_messages()
+        else:
+            self._send_error(404, "Not found")
+
+    def _handle_openai_chat(self):
+        body = self._read_body()
+        messages = body.get("messages", [])
+        tools = body.get("tools")
+        stream = body.get("stream", False)
+        max_tokens = body.get("max_tokens") or body.get("max_completion_tokens") or MAX_NEW_DEFAULT
+        temperature = body.get("temperature", DEFAULT_TEMP)
+        top_p = body.get("top_p", DEFAULT_TOP_P)
+        stop = body.get("stop")
+        if isinstance(stop, str):
+            stop = [stop]
+        effort = body.get("reasoning_effort") or (body.get("chat_template_kwargs") or {}).get("reasoning_effort")
+        rid = "chatcmpl-" + uuid.uuid4().hex[:24]
+
+        try:
+            prompt_ids, imgs = build_prompt(messages, tools=tools, effort=effort)
+        except Exception as e:
+            self._send_error(400, f"Failed to build prompt: {e}")
+            return
+
+        stop_filter = StopFilter(stop)
+        ts = TokenStream(tools)
+        thinking_parts, text_parts, tool_calls = [], [], []
+        n_out = 0
+
+        def on_token(tid):
+            nonlocal n_out
+            n_out += 1
+            STATE["tokens"] += 1
+            for kind, val in ts.feed(tid):
+                if kind == "thinking":
+                    thinking_parts.append(val)
+                elif kind == "text":
+                    emit, hit = stop_filter.feed(val)
+                    if emit:
+                        text_parts.append(emit)
+                    if hit:
+                        return True
+                elif kind == "tool":
+                    tool_calls.append(val)
+            return False
+
+        def on_idle():
+            if stream:
+                try:
+                    self._sse_write({"id": rid, "object": "chat.completion.chunk", "choices": []})
+                except Exception:
+                    raise ClientGone()
+
+        try:
+            out_ids, prefill_s, decode_s, reused, reason = generate(
+                prompt_ids, max_tokens, temperature, top_p,
+                on_token=on_token if stream else None,
+                imgs=imgs, rid=rid, on_idle=on_idle if stream else None)
+        except QueueFull as e:
+            self._send_error(429, str(e))
+            return
+        except ClientGone:
+            return
+        except Exception as e:
+            self._send_error(500, f"Generation failed: {e}")
+            return
+
+        for kind, val in ts.flush():
+            if kind == "thinking":
+                thinking_parts.append(val)
+            elif kind == "text":
+                emit, _ = stop_filter.feed(val)
+                if emit:
+                    text_parts.append(emit)
+            elif kind == "tool":
+                tool_calls.append(val)
+        remaining = stop_filter.flush()
+        if remaining:
+            text_parts.append(remaining)
+
+        thinking_text = "".join(thinking_parts)
+        text_text = "".join(text_parts)
+        finish = "stop" if reason in ("stop", "stop_sequence") else "length"
+        usage = {"prompt_tokens": len(prompt_ids), "completion_tokens": n_out, "total_tokens": len(prompt_ids) + n_out}
+
+        if stream:
+            try:
+                self._sse_write({"id": rid, "object": "chat.completion.chunk",
+                                 "choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
+                                 "usage": usage})
+                self._sse_done()
+            except Exception:
+                pass
+        else:
+            msg = {"role": "assistant", "content": text_text or None}
+            if thinking_text:
+                msg["reasoning_content"] = thinking_text
+            if tool_calls:
+                msg["tool_calls"] = [{"id": tc["id"], "type": "function",
+                                      "function": {"name": tc["name"], "arguments": json.dumps(tc["input"])}}
+                                     for tc in tool_calls]
+            self._send_json(200, {
+                "id": rid, "object": "chat.completion", "model": MODEL,
+                "choices": [{"index": 0, "message": msg, "finish_reason": finish}],
+                "usage": usage,
+            })
+        STATE["requests"] += 1
+        STATE["prefill_s"] += prefill_s
+
+    def _handle_anthropic_messages(self):
+        body = self._read_body()
+        messages = body.get("messages", [])
+        system = body.get("system", "")
+        tools = body.get("tools")
+        stream = body.get("stream", False)
+        max_tokens = body.get("max_tokens", MAX_NEW_DEFAULT)
+        temperature = body.get("temperature", DEFAULT_TEMP)
+        top_p = body.get("top_p", DEFAULT_TOP_P)
+        stop = body.get("stop_sequences")
+        effort = body.get("reasoning_effort")
+        rid = "msg_" + uuid.uuid4().hex[:24]
+
+        oa_msgs = []
+        if system:
+            oa_msgs.append({"role": "system", "content": system if isinstance(system, str) else "\n".join(system)})
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                parts = []
+                for block in content:
+                    btype = block.get("type", "")
+                    if btype == "text":
+                        parts.append(block.get("text", ""))
+                    elif btype == "image":
+                        img_bytes = _image_bytes(block)
+                        n_tok, emb = embed_image(img_bytes)
+                        sig = _img_sig(img_bytes)
+                        parts.append(f"[image:{sig}]")
+                content = "\n".join(parts)
+            oa_msgs.append({"role": role, "content": content})
+
+        try:
+            prompt_ids, imgs = build_prompt(oa_msgs, tools=tools, effort=effort)
+        except Exception as e:
+            self._send_error(400, f"Failed to build prompt: {e}")
+            return
+
+        stop_filter = StopFilter(stop)
+        ts = TokenStream(tools)
+        thinking_parts, text_parts, tool_calls = [], [], []
+        n_out = 0
+
+        def on_token(tid):
+            nonlocal n_out
+            n_out += 1
+            STATE["tokens"] += 1
+            for kind, val in ts.feed(tid):
+                if kind == "thinking":
+                    thinking_parts.append(val)
+                elif kind == "text":
+                    emit, hit = stop_filter.feed(val)
+                    if emit:
+                        text_parts.append(emit)
+                    if hit:
+                        return True
+                elif kind == "tool":
+                    tool_calls.append(val)
+            return False
+
+        def on_idle():
+            if stream:
+                try:
+                    self._sse_write({"type": "ping"})
+                except Exception:
+                    raise ClientGone()
+
+        try:
+            out_ids, prefill_s, decode_s, reused, reason = generate(
+                prompt_ids, max_tokens, temperature, top_p,
+                on_token=on_token if stream else None,
+                imgs=imgs, rid=rid, on_idle=on_idle if stream else None)
+        except QueueFull as e:
+            self._send_error(429, str(e))
+            return
+        except ClientGone:
+            return
+        except Exception as e:
+            self._send_error(500, f"Generation failed: {e}")
+            return
+
+        for kind, val in ts.flush():
+            if kind == "thinking":
+                thinking_parts.append(val)
+            elif kind == "text":
+                emit, _ = stop_filter.feed(val)
+                if emit:
+                    text_parts.append(emit)
+            elif kind == "tool":
+                tool_calls.append(val)
+        remaining = stop_filter.flush()
+        if remaining:
+            text_parts.append(remaining)
+
+        thinking_text = "".join(thinking_parts)
+        text_text = "".join(text_parts)
+        finish = "end_turn" if reason in ("stop", "stop_sequence") else "max_tokens"
+        usage = {"input_tokens": len(prompt_ids), "output_tokens": n_out}
+
+        if stream:
+            try:
+                self._sse_write({"type": "message_start", "message": {"id": rid, "type": "message", "role": "assistant",
+                                                                       "content": [], "model": MODEL, "usage": usage}})
+                idx = 0
+                if thinking_text:
+                    self._sse_write({"type": "content_block_start", "index": idx,
+                                     "content_block": {"type": "thinking", "thinking": ""}})
+                    self._sse_write({"type": "content_block_delta", "index": idx,
+                                     "delta": {"type": "thinking_delta", "thinking": thinking_text}})
+                    self._sse_write({"type": "content_block_stop", "index": idx})
+                    idx += 1
+                self._sse_write({"type": "content_block_start", "index": idx,
+                                 "content_block": {"type": "text", "text": ""}})
+                self._sse_write({"type": "content_block_delta", "index": idx,
+                                 "delta": {"type": "text_delta", "text": text_text}})
+                self._sse_write({"type": "content_block_stop", "index": idx})
+                for i, tc in enumerate(tool_calls):
+                    tidx = idx + 1 + i
+                    self._sse_write({"type": "content_block_start", "index": tidx,
+                                     "content_block": {"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": {}}})
+                    self._sse_write({"type": "content_block_delta", "index": tidx,
+                                     "delta": {"type": "input_json_delta", "partial_json": json.dumps(tc["input"])}})
+                    self._sse_write({"type": "content_block_stop", "index": tidx})
+                self._sse_write({"type": "message_delta", "delta": {"stop_reason": finish, "stop_sequence": None},
+                                 "usage": {"output_tokens": n_out}})
+                self._sse_write({"type": "message_stop"})
+            except Exception:
+                pass
+        else:
+            content = []
+            if thinking_text:
+                content.append({"type": "thinking", "thinking": thinking_text})
+            content.append({"type": "text", "text": text_text})
+            for tc in tool_calls:
+                content.append({"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": tc["input"]})
+            self._send_json(200, {
+                "id": rid, "type": "message", "role": "assistant", "model": MODEL,
+                "content": content, "stop_reason": finish, "stop_sequence": None,
+                "usage": usage,
+            })
+        STATE["requests"] += 1
+        STATE["prefill_s"] += prefill_s
+
+
+# ----------------------------------------------------------------------------- 5. tunnel
+banner(5, "Tunnel", "public cloudflared URL")
+URL = None
+tunnel_proc = None
+if CFG["tunnel"] and CLOUDFLARED.exists():
+    tunnel_proc = subprocess.Popen(
+        [str(CLOUDFLARED), "tunnel", "--url", f"http://127.0.0.1:{PORT}", "--no-autoupdate"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    pat = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+    lines = []
+
+    def _pump_tunnel():
+        for line in tunnel_proc.stdout:
+            lines.append(line.rstrip())
+            log(f"[cloudflared] {line.rstrip()[:200]}")
+    threading.Thread(target=_pump_tunnel, daemon=True).start()
+    deadline = time.time() + 120
+    while time.time() < deadline and URL is None:
+        for ln in lines:
+            m = pat.search(ln)
+            if m:
+                URL = m.group(0).rstrip("/")
+                break
+        time.sleep(1)
+    if URL:
+        log(f"   endpoint: {URL}/v1")
+        publish("tunnel-url", endpoint=f"{URL}/v1")
+    else:
+        log("   WARNING: could not get a tunnel URL in 120s")
+        publish("tunnel-failed", note="cloudflared did not produce a URL in time")
+elif CFG["tunnel"]:
+    log("   WARNING: cloudflared not available; no public tunnel")
+    publish("tunnel-failed", note="cloudflared binary not found")
+
+# ----------------------------------------------------------------------------- 6. ready + keepalive
+banner(6, "Ready", "self-test, then keep serving")
+
+try:
+    t0 = time.time()
+    prompt_ids, _ = build_prompt([{"role": "user", "content": "Say hello in one word."}])
+    out_ids, pf, dec, reused, reason = generate(prompt_ids, 16, 0.0, 1.0)
+    test_text = tok.decode(out_ids[:16])
+    t_total = time.time() - t0
+    log(f"   self-test: {test_text.strip()[:60]!r} ({t_total:.1f}s, {len(out_ids)} tokens)")
+    publish("warmed", minutes=round((time.time() - T0) / 60, 1), hbm_gb=round(hbm()[0], 2))
+except Exception as e:
+    log(f"   self-test failed: {e}")
+    publish("warmed", minutes=round((time.time() - T0) / 60, 1), hbm_gb=round(hbm()[0], 2), note=f"self-test error: {str(e)[:100]}")
+
+httpd = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+log(f"   HTTP server listening on 0.0.0.0:{PORT}")
+
+endpoint = f"{URL}/v1" if URL else None
+log("")
+log("#" * 70)
+log(f"#  READY — GLM-5.3-Flash is live ({elapsed()} after start)")
+log(f"#  ENDPOINT : {endpoint or 'http://127.0.0.1:' + str(PORT) + '/v1 (no tunnel)'}")
+log(f"#  API KEY  : {API_KEY}")
+log(f"#  MODEL    : {MODEL}   (context {CFG['max_len']}, {MAX_STREAMS} streams)")
+log("#" * 70)
+log("#  Try it:")
+log(f"#    curl {endpoint or 'http://127.0.0.1:' + str(PORT) + '/v1'}/chat/completions \\")
+log(f"#      -H 'Authorization: Bearer {API_KEY}' -H 'Content-Type: application/json' \\")
+log(f"#      -d '{{\"model\": \"{MODEL}\", \"messages\": [{{\"role\": \"user\", \"content\": \"Hello!\"}}]}}'")
+log(f"#  Serving for up to {CFG['keepalive_min']} min, then this kernel exits on its own.")
+log("#" * 70)
+publish("ready", endpoint=endpoint, api_key=API_KEY, model=MODEL,
+        max_model_len=CFG["max_len"], keepalive_min=CFG["keepalive_min"],
+        startup_secs=int(time.time() - T0))
+
+def _serve():
+    httpd.serve_forever()
+
+srv_thread = threading.Thread(target=_serve, daemon=True)
+srv_thread.start()
+
+t_serve = time.time()
+while time.time() - t_serve < CFG["keepalive_min"] * 60:
+    time.sleep(120)
+    up = int((time.time() - t_serve) / 60)
+    if up % 10 < 2:
+        publish("heartbeat", up_min=up, endpoint=endpoint)
+        log(f"   still serving ({up} min) — {endpoint or 'local only'}")
+
+publish("auto-shutdown", served_min=CFG["keepalive_min"])
+log("   keepalive window ended; shutting down.")
+httpd.shutdown()
+if tunnel_proc and tunnel_proc.poll() is None:
+    tunnel_proc.terminate()
+    try:
+        tunnel_proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        tunnel_proc.kill()
+sys.exit(0)
