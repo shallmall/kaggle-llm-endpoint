@@ -1,1 +1,0 @@
-"async_scheduling": False,     # vllm-tpu 0.28.0 + MTP crashes on some requests with async scheduling.

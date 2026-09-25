@@ -1,2 +1,0 @@
-if cfg.get("async_scheduling") is not None:
-    args.append("--async-scheduling" if cfg["async_scheduling"] else "--no-async-scheduling")
