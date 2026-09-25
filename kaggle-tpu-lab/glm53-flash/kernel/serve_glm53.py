@@ -83,23 +83,19 @@ CLOUDFLARED = Path("/tmp/cloudflared")
 T0 = time.time()
 LOG_LINES = []
 
-
 def log(*parts):
     line = time.strftime("[%H:%M:%S] ") + " ".join(str(p) for p in parts)
     LOG_LINES.append(line)
     print(line, flush=True)
 
-
 def elapsed():
     return f"{int(time.time() - T0) // 60} min {int(time.time() - T0) % 60:02d} s"
-
 
 def banner(step, title, note=""):
     log("")
     log("=" * 70)
     log(f" STEP {step}/6  {title}" + (f"   ({note})" if note else "") + f"   [{elapsed()} so far]")
     log("=" * 70)
-
 
 def publish(phase, **extra):
     """Progress event: always logged; also pushed to ntfy if a topic is set."""
@@ -113,13 +109,11 @@ def publish(phase, **extra):
     except Exception as e:  # noqa: BLE001
         log(f"(ntfy publish failed: {e})")
 
-
 def sh(cmd, tag):
     t = time.time()
     r = subprocess.run(cmd, capture_output=True, text=True)
     log(f"   {tag}: rc {r.returncode} in {time.time() - t:.0f}s" + (f" | {(r.stderr or '')[-200:].strip()}" if r.returncode else ""))
     return r.returncode
-
 
 def mounts_of(names):
     """Dataset names ('owner/slug') -> mounted paths, in the given order (missing ones dropped)."""
@@ -131,18 +125,15 @@ def mounts_of(names):
             out.append(hits[0])
     return out
 
-
 def hbm():
     st = jax.devices()[0].memory_stats() or {}
     return st.get("bytes_in_use", 0) / 1e9, (st.get("bytes_limit") or 0) / 1e9
-
 
 def fail(step, msg):
     """Stop with a plain message (the launcher prints `step` and `tail` of a "failed" phase)."""
     log("   " + msg)
     publish("failed", step=step, tail=msg)
     sys.exit(1)
-
 
 def preflight():
     """Look before the slow steps (~20 s): the datasets attached, Internet on (pip, cloudflared) and a real TPU present.
@@ -168,7 +159,7 @@ def preflight():
         r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=180)
         m = re.search(r"TPU_CHECK (\d+) (\S+)(.*)", (r.stdout or "") + (r.stderr or ""))
     except Exception as e:  # noqa: BLE001
-        log(f"   (TPU check skipped: {e})"); return
+        log(f"(TPU check skipped: {e})"); return
     if m is None:
         log("   (TPU check inconclusive: the image's jax did not answer; continuing)"); return
     n, platform, rest = int(m.group(1)), m.group(2), m.group(3).strip()
@@ -181,6 +172,8 @@ def preflight():
                    "that. Stop the session and start it again; `import jax; print(jax.device_count())` in a fresh cell must "
                    "print 8 before this script is worth running.")
 
+# Define SERVE_MOUNT here, after mounts_of is defined and before it's used for engine path setup.
+SERVE_MOUNT = (mounts_of([CFG["serve_dataset"]]) or [None])[0] if CFG["serve_dataset"] else None
 
 # ----------------------------------------------------------------------------- 1. runtime
 if not CFG["skip_runtime"]:
@@ -190,24 +183,39 @@ if not CFG["skip_runtime"]:
         "torch", "--index-url", "https://download.pytorch.org/whl/cpu", "--extra-index-url", "https://pypi.org/simple"], "pip packages")
     if CFG["libtpu"]:
         sh([sys.executable, "-m", "pip", "install", "-q", f"libtpu=={CFG['libtpu']}"], f"libtpu=={CFG['libtpu']}")
+
+    # --- Engine package setup ---
+    engine_found = False
     if ENGINE_B64 and not ENGINE_B64.startswith("__"):
+        # Case 1: Engine is embedded (e.g., for Qwen or specific GLM builds)
         with tarfile.open(fileobj=io.BytesIO(base64.b64decode(ENGINE_B64)), mode="r:gz") as tf:
             tf.extractall(WORK)
         sys.path.insert(0, str(WORK))
         log(f"   engine package extracted to {WORK}/glm53")
-    elif not Path("glm53").is_dir():
-        sys.exit("no glm53/ package next to this script and nothing embedded — run the notebook's engine cell first")
+        engine_found = True
+    elif SERVE_MOUNT and (Path(SERVE_MOUNT) / "glm53").is_dir():
+        # Case 2: Engine is in the mounted serve_dataset (typical for GLM)
+        sys.path.insert(0, str(Path(SERVE_MOUNT)))
+        log(f"   engine package found in serve dataset at {SERVE_MOUNT}")
+        engine_found = True
+    elif Path("glm53").is_dir():
+        # Case 3: Fallback for local testing where glm53/ is in the current directory
+        sys.path.insert(0, str(Path(".")))
+        log(f"   engine package found in current directory (local testing)")
+        engine_found = True
 
-if CFG["tunnel"] and not CLOUDFLARED.exists():
-    urllib.request.urlretrieve("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64", CLOUDFLARED)
-    CLOUDFLARED.chmod(0o755)
-    log("   cloudflared downloaded")
+    if not engine_found:
+        sys.exit("no glm53/ package found. Ensure it's embedded by launch.py or present in the serve dataset.")
 
-import numpy as np                      # noqa: E402  (after the runtime pins: libtpu must be installed before jax loads)
-import jax, jax.numpy as jnp            # noqa: E402
-from jax.sharding import Mesh, NamedSharding, PartitionSpec as P   # noqa: E402
+    if CFG["tunnel"] and not CLOUDFLARED.exists():
+        urllib.request.urlretrieve("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64", CLOUDFLARED)
+        CLOUDFLARED.chmod(0o755)
+        log("   cloudflared downloaded")
 
-SERVE_MOUNT = (mounts_of([CFG["serve_dataset"]]) or [None])[0] if CFG["serve_dataset"] else None
+    import numpy as np                      # noqa: E402  (after the runtime pins: libtpu must be installed before jax loads)
+    import jax, jax.numpy as jnp            # noqa: E402
+    from jax.sharding import Mesh, NamedSharding, PartitionSpec as P   # noqa: E402
+
 BASE_DIR = os.path.join(SERVE_MOUNT, "base") if SERVE_MOUNT and os.path.isdir(os.path.join(SERVE_MOUNT, "base")) else None
 if "eng" not in globals():              # (a test harness may pre-set eng/tok/ids/eos/cfg and skip the build)
     cache_src = os.path.join(SERVE_MOUNT, "jax_cache") if SERVE_MOUNT and os.path.isdir(os.path.join(SERVE_MOUNT, "jax_cache")) else None
@@ -355,7 +363,7 @@ if BUCKET_MIN:
 STATE = {"url": None, "requests": 0, "tokens": 0, "prefix_hits": 0, "prefix_tokens_reused": 0, "prefill_s": 0.0,
          "snap_hits": 0, "snap_parks": 0, "snap_pins": 0, "snap_entries": 0, "snap_bytes": 0, "snap_s": 0.0,
          "steps": 0, "step_tokens": 0}
-T = {k: tok.convert_tokens_to_ids(k) for k in ("<think>", "", "", "", "<arg_key>", "</arg_key>",
+T = {k: tok.convert_tokens_to_ids(k) for k in ("", "", "", "", "<arg_key>", "</arg_key>",
                                                 "<arg_value>", "</arg_value>", "<|user|>", "<|observation|>", "<|assistant|>",
                                                 "<|image|>", "<|begin_of_image|>", "<|end_of_image|>")}
 STOP_IDS = set(eos) | {T["<|user|>"], T["<|observation|>"]}
@@ -506,7 +514,8 @@ def sched_feed(req, a, b):
 _drop = [k for k in eng._progs if isinstance(k, tuple) and k[0] == "group" and k[3] == 1 and k[5]]   # batch-1 loop programs: unused here
 for k in _drop:
     del eng._progs[k]
-SNAPS = SnapStore(eng, int(SNAP_HOST_GB * 1e9), SNAP_ROWS, match_len=_match_len, log=log, state=STATE)
+SNAPS = SnapStore(eng, int(SNAP_HOST_GB * 1e9), SNAP_ROWS, match_len=_match_len, log=log, state=STATE,
+                  base_min=BASE_MIN, snap_min=SNAP_MIN, snap_warm_tokens=SNAP_WARM) # Added snap_warm_tokens
 SCHED = Scheduler(eng, STOP_IDS, MAX_STREAMS, MAX_SETS, feed=sched_feed, match_len=_match_len, system_end=system_end,
                   first_sample=lambda z, t, p: sample(z, t, p, RNG), snaps=SNAPS, log=log, state=STATE,
                   base_min=BASE_MIN, snap_min=SNAP_MIN, piece=SCHED_PIECE, min_free_gb=MIN_FREE_GB, max_wait_s=MAX_WAIT_S)
@@ -639,7 +648,7 @@ class TokenStream:
         if t in STOP_IDS:
             return self.flush()
         if self.mode == "tool":
-            if t == T[""]:
+            if t == T[""] and self.tool_buf: # Only transition if there's actual tool content
                 self.mode = "text"; call = parse_tool_call(self.tool_buf, self.tools); self.tool_buf = []
                 return [("tool", call)]
             self.tool_buf.append(t); return []
