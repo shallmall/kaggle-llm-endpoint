@@ -372,7 +372,6 @@ STOP_IDS = set(eos) | {T["<|user|>"], T["<|observation|>"]}
 IMG_CACHE = collections.OrderedDict()                  # sha256 -> (n_tokens, embeddings f32 [n, D]); LRU
 IMG_CACHE_MAX = 64
 
-
 def embed_image(img_bytes):
     """Image bytes -> (n_tokens, embeddings [n, D] f32) through the vision tower; cached by content hash. The patch
     count is padded to a power of two with a dummy image segment (its rows are dropped) so few shapes compile."""
@@ -398,7 +397,6 @@ def embed_image(img_bytes):
         IMG_CACHE.popitem(last=False)
     return IMG_CACHE[h]
 
-
 def _image_bytes(block):
     """Anthropic image block or OpenAI image_url part -> raw bytes (base64 or data: URL inline; http(s) fetched)."""
     if block.get("type") == "image":
@@ -415,15 +413,12 @@ def _image_bytes(block):
         return urllib.request.urlopen(url, timeout=30).read()
     raise ValueError("unsupported image source")
 
-
 def _img_sig(img_bytes):
     """Negative pseudo token id identifying an image in prompt signatures (all of its tokens carry it)."""
     return -(1 + int(hashlib.sha256(img_bytes).hexdigest()[:8], 16) % (1 << 30))
 
-
 def _dec(ids):
     return tok.decode([T["<|image|>"] if int(i) < 0 else int(i) for i in ids])
-
 
 def _feed(sig, imgs):
     """Signature ids (image tokens negative) -> (real ids int32 [n], embeds (idx, vec) or None) for the engine."""
@@ -435,7 +430,6 @@ def _feed(sig, imgs):
     vec = np.concatenate([imgs[int(sig_a[i])][1][off[i]:off[i] + 1] for i in idx], 0)
     return ids, (idx, vec)
 
-
 def _run_offsets(sig):
     """Per position: index within its run of equal negative ids (0 for text)."""
     sig = np.asarray(sig)
@@ -444,7 +438,6 @@ def _run_offsets(sig):
         if sig[i] < 0 and sig[i] == sig[i - 1]:
             off[i] = off[i - 1] + 1
     return off
-
 
 # ---- sampling of the first token (the rest are sampled on the device)
 def sample(logits, temperature, top_p, rng, n_cand=2048):
@@ -462,10 +455,8 @@ def sample(logits, temperature, top_p, rng, n_cand=2048):
         q = np.zeros_like(p); q[keep] = p[keep]; p = q / q.sum()
     return int(cand[rng.choice(n_cand, p=p)])
 
-
 BASE_MIN, SNAP_HOST_GB = CFG["base_min"], CFG["snap_host_gb"]
 SNAP_ROWS, SNAP_MIN, SNAP_WARM = CFG["snap_rows"], CFG["snap_min"], CFG["snap_warm_tokens"]
-
 
 def system_end(prompt):
     """Index of the first <|user|> token = end of the rendered system section (system prompt + tools)."""
@@ -474,11 +465,10 @@ def system_end(prompt):
     except ValueError:
         return 0
 
-
 def _match_len(live_ids, pos, prompt, quiet=False):
     """Longest reuse of the live context (ids[:pos]) for `prompt`: (k, fed) where prompt[k:] must still be prefilled and
     `fed` = the ids the engine will have seen after that, or (0, None). Handles a dropped thinking block (the template
-    renders `<think>` where the live context holds the reasoning) and re-tokenisation drift near the boundary."""
+    renders `` where the live context holds the reasoning) and re-tokenisation drift near the boundary."""
     THINK, END = T["<|assistant|>"], T[""]
     i = j = 0
     while True:
