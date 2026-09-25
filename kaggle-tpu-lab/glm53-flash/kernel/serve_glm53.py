@@ -803,6 +803,7 @@ class Handler(BaseHTTPRequestHandler):
         ts = TokenStream(tools)
         thinking_parts, text_parts, tool_calls = [], [], []
         n_out = 0
+        sse_started = [False]
 
         def on_token(tid):
             nonlocal n_out
@@ -811,20 +812,41 @@ class Handler(BaseHTTPRequestHandler):
             for kind, val in ts.feed(tid):
                 if kind == "thinking":
                     thinking_parts.append(val)
+                    if stream:
+                        if not sse_started[0]:
+                            self._sse_headers()
+                            sse_started[0] = True
+                        self._sse_write({"id": rid, "object": "chat.completion.chunk", "created": int(time.time()),
+                                         "model": MODEL, "choices": [{"index": 0, "delta": {"reasoning_content": val}, "finish_reason": None}]})
                 elif kind == "text":
                     emit, hit = stop_filter.feed(val)
                     if emit:
                         text_parts.append(emit)
+                        if stream:
+                            if not sse_started[0]:
+                                self._sse_headers()
+                                sse_started[0] = True
+                            self._sse_write({"id": rid, "object": "chat.completion.chunk", "created": int(time.time()),
+                                             "model": MODEL, "choices": [{"index": 0, "delta": {"content": emit}, "finish_reason": None}]})
                     if hit:
                         return True
                 elif kind == "tool":
                     tool_calls.append(val)
+                    if stream:
+                        if not sse_started[0]:
+                            self._sse_headers()
+                            sse_started[0] = True
+                        tc_delta = {"tool_calls": [{"index": len(tool_calls) - 1, "id": val["id"], "type": "function",
+                                                    "function": {"name": val["name"], "arguments": json.dumps(val["input"])}}]}
+                        self._sse_write({"id": rid, "object": "chat.completion.chunk", "created": int(time.time()),
+                                         "model": MODEL, "choices": [{"index": 0, "delta": tc_delta, "finish_reason": None}]})
             return False
 
         def on_idle():
-            if stream:
+            if stream and sse_started[0]:
                 try:
-                    self._sse_write({"id": rid, "object": "chat.completion.chunk", "choices": []})
+                    self._sse_write({"id": rid, "object": "chat.completion.chunk", "created": int(time.time()),
+                                     "model": MODEL, "choices": []})
                 except Exception:
                     raise ClientGone()
 
@@ -842,18 +864,33 @@ class Handler(BaseHTTPRequestHandler):
             self._send_error(500, f"Generation failed: {e}")
             return
 
+        # Flush remaining buffered tokens
         for kind, val in ts.flush():
             if kind == "thinking":
                 thinking_parts.append(val)
+                if stream:
+                    self._sse_write({"id": rid, "object": "chat.completion.chunk", "created": int(time.time()),
+                                     "model": MODEL, "choices": [{"index": 0, "delta": {"reasoning_content": val}, "finish_reason": None}]})
             elif kind == "text":
                 emit, _ = stop_filter.feed(val)
                 if emit:
                     text_parts.append(emit)
+                    if stream:
+                        self._sse_write({"id": rid, "object": "chat.completion.chunk", "created": int(time.time()),
+                                         "model": MODEL, "choices": [{"index": 0, "delta": {"content": emit}, "finish_reason": None}]})
             elif kind == "tool":
                 tool_calls.append(val)
+                if stream:
+                    tc_delta = {"tool_calls": [{"index": len(tool_calls) - 1, "id": val["id"], "type": "function",
+                                                "function": {"name": val["name"], "arguments": json.dumps(val["input"])}}]}
+                    self._sse_write({"id": rid, "object": "chat.completion.chunk", "created": int(time.time()),
+                                     "model": MODEL, "choices": [{"index": 0, "delta": tc_delta, "finish_reason": None}]})
         remaining = stop_filter.flush()
         if remaining:
             text_parts.append(remaining)
+            if stream:
+                self._sse_write({"id": rid, "object": "chat.completion.chunk", "created": int(time.time()),
+                                 "model": MODEL, "choices": [{"index": 0, "delta": {"content": remaining}, "finish_reason": None}]})
 
         thinking_text = "".join(thinking_parts)
         text_text = "".join(text_parts)
@@ -862,8 +899,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if stream:
             try:
-                self._sse_write({"id": rid, "object": "chat.completion.chunk",
-                                 "choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
+                if not sse_started[0]:
+                    self._sse_headers()
+                    sse_started[0] = True
+                self._sse_write({"id": rid, "object": "chat.completion.chunk", "created": int(time.time()),
+                                 "model": MODEL, "choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
                                  "usage": usage})
                 self._sse_done()
             except Exception:
@@ -927,6 +967,18 @@ class Handler(BaseHTTPRequestHandler):
         ts = TokenStream(tools)
         thinking_parts, text_parts, tool_calls = [], [], []
         n_out = 0
+        sse_started = [False]
+        block_idx = [0]
+        thinking_block_open = [False]
+        text_block_open = [False]
+
+        def _anth_sse_start():
+            if not sse_started[0]:
+                self._sse_headers()
+                sse_started[0] = True
+                self._sse_write({"type": "message_start", "message": {"id": rid, "type": "message", "role": "assistant",
+                                                                       "content": [], "model": MODEL,
+                                                                       "usage": {"input_tokens": len(prompt_ids), "output_tokens": 0}}})
 
         def on_token(tid):
             nonlocal n_out
@@ -935,18 +987,55 @@ class Handler(BaseHTTPRequestHandler):
             for kind, val in ts.feed(tid):
                 if kind == "thinking":
                     thinking_parts.append(val)
+                    if stream:
+                        _anth_sse_start()
+                        if not thinking_block_open[0]:
+                            self._sse_write({"type": "content_block_start", "index": block_idx[0],
+                                             "content_block": {"type": "thinking", "thinking": ""}})
+                            thinking_block_open[0] = True
+                        self._sse_write({"type": "content_block_delta", "index": block_idx[0],
+                                         "delta": {"type": "thinking_delta", "thinking": val}})
                 elif kind == "text":
                     emit, hit = stop_filter.feed(val)
                     if emit:
                         text_parts.append(emit)
+                        if stream:
+                            _anth_sse_start()
+                            if thinking_block_open[0]:
+                                self._sse_write({"type": "content_block_stop", "index": block_idx[0]})
+                                block_idx[0] += 1
+                                thinking_block_open[0] = False
+                            if not text_block_open[0]:
+                                self._sse_write({"type": "content_block_start", "index": block_idx[0],
+                                                 "content_block": {"type": "text", "text": ""}})
+                                text_block_open[0] = True
+                            self._sse_write({"type": "content_block_delta", "index": block_idx[0],
+                                             "delta": {"type": "text_delta", "text": emit}})
                     if hit:
                         return True
                 elif kind == "tool":
                     tool_calls.append(val)
+                    if stream:
+                        _anth_sse_start()
+                        if thinking_block_open[0]:
+                            self._sse_write({"type": "content_block_stop", "index": block_idx[0]})
+                            block_idx[0] += 1
+                            thinking_block_open[0] = False
+                        if text_block_open[0]:
+                            self._sse_write({"type": "content_block_stop", "index": block_idx[0]})
+                            block_idx[0] += 1
+                            text_block_open[0] = False
+                        tidx = block_idx[0]
+                        self._sse_write({"type": "content_block_start", "index": tidx,
+                                         "content_block": {"type": "tool_use", "id": val["id"], "name": val["name"], "input": {}}})
+                        self._sse_write({"type": "content_block_delta", "index": tidx,
+                                         "delta": {"type": "input_json_delta", "partial_json": json.dumps(val["input"])}})
+                        self._sse_write({"type": "content_block_stop", "index": tidx})
+                        block_idx[0] += 1
             return False
 
         def on_idle():
-            if stream:
+            if stream and sse_started[0]:
                 try:
                     self._sse_write({"type": "ping"})
                 except Exception:
@@ -966,18 +1055,68 @@ class Handler(BaseHTTPRequestHandler):
             self._send_error(500, f"Generation failed: {e}")
             return
 
+        # Flush remaining buffered tokens
         for kind, val in ts.flush():
             if kind == "thinking":
                 thinking_parts.append(val)
+                if stream:
+                    _anth_sse_start()
+                    if not thinking_block_open[0]:
+                        self._sse_write({"type": "content_block_start", "index": block_idx[0],
+                                         "content_block": {"type": "thinking", "thinking": ""}})
+                        thinking_block_open[0] = True
+                    self._sse_write({"type": "content_block_delta", "index": block_idx[0],
+                                     "delta": {"type": "thinking_delta", "thinking": val}})
             elif kind == "text":
                 emit, _ = stop_filter.feed(val)
                 if emit:
                     text_parts.append(emit)
+                    if stream:
+                        _anth_sse_start()
+                        if thinking_block_open[0]:
+                            self._sse_write({"type": "content_block_stop", "index": block_idx[0]})
+                            block_idx[0] += 1
+                            thinking_block_open[0] = False
+                        if not text_block_open[0]:
+                            self._sse_write({"type": "content_block_start", "index": block_idx[0],
+                                             "content_block": {"type": "text", "text": ""}})
+                            text_block_open[0] = True
+                        self._sse_write({"type": "content_block_delta", "index": block_idx[0],
+                                         "delta": {"type": "text_delta", "text": emit}})
             elif kind == "tool":
                 tool_calls.append(val)
+                if stream:
+                    _anth_sse_start()
+                    if thinking_block_open[0]:
+                        self._sse_write({"type": "content_block_stop", "index": block_idx[0]})
+                        block_idx[0] += 1
+                        thinking_block_open[0] = False
+                    if text_block_open[0]:
+                        self._sse_write({"type": "content_block_stop", "index": block_idx[0]})
+                        block_idx[0] += 1
+                        text_block_open[0] = False
+                    tidx = block_idx[0]
+                    self._sse_write({"type": "content_block_start", "index": tidx,
+                                     "content_block": {"type": "tool_use", "id": val["id"], "name": val["name"], "input": {}}})
+                    self._sse_write({"type": "content_block_delta", "index": tidx,
+                                     "delta": {"type": "input_json_delta", "partial_json": json.dumps(val["input"])}})
+                    self._sse_write({"type": "content_block_stop", "index": tidx})
+                    block_idx[0] += 1
         remaining = stop_filter.flush()
         if remaining:
             text_parts.append(remaining)
+            if stream:
+                _anth_sse_start()
+                if thinking_block_open[0]:
+                    self._sse_write({"type": "content_block_stop", "index": block_idx[0]})
+                    block_idx[0] += 1
+                    thinking_block_open[0] = False
+                if not text_block_open[0]:
+                    self._sse_write({"type": "content_block_start", "index": block_idx[0],
+                                     "content_block": {"type": "text", "text": ""}})
+                    text_block_open[0] = True
+                self._sse_write({"type": "content_block_delta", "index": block_idx[0],
+                                 "delta": {"type": "text_delta", "text": remaining}})
 
         thinking_text = "".join(thinking_parts)
         text_text = "".join(text_parts)
@@ -986,28 +1125,13 @@ class Handler(BaseHTTPRequestHandler):
 
         if stream:
             try:
-                self._sse_write({"type": "message_start", "message": {"id": rid, "type": "message", "role": "assistant",
-                                                                       "content": [], "model": MODEL, "usage": usage}})
-                idx = 0
-                if thinking_text:
-                    self._sse_write({"type": "content_block_start", "index": idx,
-                                     "content_block": {"type": "thinking", "thinking": ""}})
-                    self._sse_write({"type": "content_block_delta", "index": idx,
-                                     "delta": {"type": "thinking_delta", "thinking": thinking_text}})
-                    self._sse_write({"type": "content_block_stop", "index": idx})
-                    idx += 1
-                self._sse_write({"type": "content_block_start", "index": idx,
-                                 "content_block": {"type": "text", "text": ""}})
-                self._sse_write({"type": "content_block_delta", "index": idx,
-                                 "delta": {"type": "text_delta", "text": text_text}})
-                self._sse_write({"type": "content_block_stop", "index": idx})
-                for i, tc in enumerate(tool_calls):
-                    tidx = idx + 1 + i
-                    self._sse_write({"type": "content_block_start", "index": tidx,
-                                     "content_block": {"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": {}}})
-                    self._sse_write({"type": "content_block_delta", "index": tidx,
-                                     "delta": {"type": "input_json_delta", "partial_json": json.dumps(tc["input"])}})
-                    self._sse_write({"type": "content_block_stop", "index": tidx})
+                _anth_sse_start()
+                if thinking_block_open[0]:
+                    self._sse_write({"type": "content_block_stop", "index": block_idx[0]})
+                    block_idx[0] += 1
+                if text_block_open[0]:
+                    self._sse_write({"type": "content_block_stop", "index": block_idx[0]})
+                    block_idx[0] += 1
                 self._sse_write({"type": "message_delta", "delta": {"stop_reason": finish, "stop_sequence": None},
                                  "usage": {"output_tokens": n_out}})
                 self._sse_write({"type": "message_stop"})

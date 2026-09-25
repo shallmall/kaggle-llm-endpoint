@@ -1,0 +1,1 @@
+python launch.py serve --model glm --reasoning-effort high --streams 8 --vision false

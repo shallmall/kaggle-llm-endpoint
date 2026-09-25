@@ -1,0 +1,2 @@
+python launch.py status
+python launch.py status --follow   # keep watching
