@@ -1,1 +1,56 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Kaggle credentials — NEVER commit these
+kaggle.json
+.kaggle/
+
+# Logs
+*.log
+vllm.log
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment / secrets
+.env
+.env.*
+
+# Temporary files
+/tmp/
+*.tmp
+*.download
+
+# Aider
 .aider*
+
+# Project state (created by launch.py in home dir, but just in case)
+.kaggle-tpu-lab.json
+
+# Garbage artifact files (accidental chat-paste artifacts)
+*`*
+*\**
+*(*
+*Launch*
+*Example:*
+*Check status*
+*Stop the TPU*
