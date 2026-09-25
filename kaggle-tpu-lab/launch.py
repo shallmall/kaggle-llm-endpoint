@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-kaggle-tpu-lab launcher — serve Qwen3.8-27B on a free Kaggle TPU from your terminal.
+kaggle-tpu-lab launcher — serve LLMs on a free Kaggle TPU from your terminal.
 
-    python launch.py serve                 # push the kernel and watch it come up
-    python launch.py serve --reasoning-effort medium --mtp 3
-    python launch.py status                # one-shot status + recent events
-    python launch.py stop                  # kill the TPU session
+    python launch.py serve                          # Qwen3.8-27B (default)
+    python launch.py serve --model glm              # GLM-5.3-Flash
+    python launch.py serve --model glm --reasoning-effort low
+    python launch.py status                         # one-shot status + recent events
+    python launch.py stop                           # kill the TPU session
 
 Requires the Kaggle CLI, authenticated:  pip install kaggle   (see README).
 Only the Python standard library is used here.
@@ -25,14 +26,42 @@ import uuid
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-KERNEL_SRC = HERE / "qwen38-27b" / "kernel" / "serve_qwen38.py"
 STATE_FILE = Path.home() / ".kaggle-tpu-lab.json"
 
-WEIGHTS_DATASET = "rahim3/qwen3-8-27b-bf16"
-ENV_DATASET = "rahim3/qwen38-tpu-env-v5e8"   # XLA compile cache + cloudflared + manifest
+# ---------------------------------------------------------------------------
+# Model-specific configuration
+# ---------------------------------------------------------------------------
+MODELS = {
+    "qwen": {
+        "kernel_src": HERE / "qwen38-27b" / "kernel" / "serve_qwen38.py",
+        "kernel_name": "serve_qwen38.py",
+        "default_slug": "qwen38-tpu-serve",
+        "served_model_name": "qwen3.8-27b",
+        "dataset_sources": [
+            "rahim3/qwen3-8-27b-bf16",
+            "rahim3/qwen38-tpu-env-v5e8",
+        ],
+        "weights_dataset": "rahim3/qwen3-8-27b-bf16",
+        "env_dataset": "rahim3/qwen38-tpu-env-v5e8",
+    },
+    "glm": {
+        "kernel_src": HERE / "glm53-flash" / "kernel" / "serve_glm53.py",
+        "kernel_name": "serve_glm53.py",
+        "default_slug": "glm53-tpu-serve",
+        "served_model_name": "glm-5.3-flash",
+        "dataset_sources": [
+            "rahim3/glm53-flash-iq3xxs-1",
+            "rahim3/glm53-flash-iq3xxs-2",
+            "rahim3/glm53-flash-serve",
+        ],
+        "weights_dataset": None,
+        "env_dataset": None,
+    },
+}
 
 # Friendly one-liners for each phase the kernel publishes.
 PHASE_TEXT = {
+    # --- Qwen phases ---
     "install":            "Building the Python runtime with uv (~30 s)...",
     "installed":          "Runtime ready.",
     "mtp-patch-applied":  "MTP state-rollback patch applied.",
@@ -42,11 +71,16 @@ PHASE_TEXT = {
     "weights-mounted":    "Weights found mounted (no download needed).",
     "weights-download":   "Downloading weights from Hugging Face (~5 min)...",
     "weights-downloaded": "Weights downloaded.",
-    "server-launch":      "Starting vLLM — loading 55 GB of weights, then TPU graph compile...",
-    "tunnel-url":         None,
-    "compiling":          None,  # rendered with elapsed time below
+    "server-launch":      "Starting vLLM — loading weights, then TPU graph compile...",
     "serving":            "Server is HEALTHY.",
     "benchmark":          None,
+    # --- GLM phases ---
+    "loading":            "Loading weights onto the TPU chips...",
+    "loaded":             "Weights loaded.",
+    "warmed":             "Warm-up complete (prefill buckets, decode programs, snapshots).",
+    # --- Shared phases ---
+    "tunnel-url":         None,
+    "compiling":          None,  # rendered with elapsed time below
     "ready":              None,
     "heartbeat":          None,
     "failed":             None,
@@ -87,7 +121,8 @@ def kaggle_username(cli_arg):
 def cmd_serve(args):
     check_auth()
     user = kaggle_username(args.user)
-    slug = args.slug
+    model_cfg = MODELS[args.model]
+    slug = args.slug or model_cfg["default_slug"]
     topic = "ktl-" + uuid.uuid4().hex[:20]
     # KTL_API_KEY lets you pin a permanent key instead of getting a fresh
     # random one every boot. Falls back to the original random behavior.
@@ -110,52 +145,67 @@ def cmd_serve(args):
     elif relay_url or relay_secret:
         sys.exit("Set both KTL_RELAY_URL and KTL_RELAY_UPDATE_SECRET, or neither (see SETUP.md).")
 
+    # Build the CFG dict that gets injected into the kernel script.
     cfg = {
         "ntfy_topic": topic,
         "api_key": api_key,
-        "max_model_len": args.max_model_len,
-        "max_num_seqs": args.max_num_seqs,
-        "mtp_tokens": args.mtp,
-        "async_scheduling": False,
-        "reasoning_effort_default": args.reasoning_effort,
+        "served_model_name": model_cfg["served_model_name"],
         "keepalive_min": args.keepalive_min,
-        "weights_dataset": args.weights_dataset,
     }
-    if tunnel_token:
-        cfg["tunnel_token"] = tunnel_token
-        cfg["tunnel_hostname"] = tunnel_hostname
-    if args.no_tools:
-        cfg["tool_call_parser"] = ""
-    if args.text_only:
-        cfg["text_only"] = True
-    if args.verbose:
-        cfg["verbose"] = True
-    if args.fast_start:
-        cfg["fast_start"] = True
 
-    src = KERNEL_SRC.read_text()
+    # Model-specific config keys
+    if args.model == "qwen":
+        cfg["max_model_len"] = args.max_model_len
+        cfg["max_num_seqs"] = args.max_num_seqs
+        cfg["mtp_tokens"] = args.mtp
+        cfg["async_scheduling"] = False
+        cfg["reasoning_effort_default"] = args.reasoning_effort
+        cfg["weights_dataset"] = args.weights_dataset or model_cfg["weights_dataset"]
+        if tunnel_token:
+            cfg["tunnel_token"] = tunnel_token
+            cfg["tunnel_hostname"] = tunnel_hostname
+        if args.no_tools:
+            cfg["tool_call_parser"] = ""
+        if args.text_only:
+            cfg["text_only"] = True
+        if args.verbose:
+            cfg["verbose"] = True
+        if args.fast_start:
+            cfg["fast_start"] = True
+    elif args.model == "glm":
+        cfg["reasoning_effort_default"] = args.reasoning_effort
+        if args.max_model_len:
+            cfg["max_len"] = args.max_model_len
+        if args.streams:
+            cfg["streams"] = args.streams
+        if args.vision is not None:
+            cfg["vision"] = args.vision
+        if args.verbose:
+            cfg["verbose"] = True
+
+    src = model_cfg["kernel_src"].read_text()
     src, n = re.subn(r"^CFG = None  # __LAUNCHER_CONFIG__.*$",
                      f"CFG = {cfg!r}", src, count=1, flags=re.M)
     if n != 1:
-        sys.exit("kernel/serve_qwen38.py is missing the __LAUNCHER_CONFIG__ line")
+        sys.exit(f"{model_cfg['kernel_name']} is missing the __LAUNCHER_CONFIG__ line")
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
-        (td / "serve_qwen38.py").write_text(src)
+        (td / model_cfg["kernel_name"]).write_text(src)
         (td / "kernel-metadata.json").write_text(json.dumps({
             "id": f"{user}/{slug}",
             "title": slug,
-            "code_file": "serve_qwen38.py",
+            "code_file": model_cfg["kernel_name"],
             "language": "python",
             "kernel_type": "script",
             "is_private": "true",
             "enable_gpu": "false",
             "enable_tpu": "true",
             "enable_internet": "true",
-            "dataset_sources": [args.weights_dataset, ENV_DATASET],
+            "dataset_sources": model_cfg["dataset_sources"],
             "competition_sources": [], "kernel_sources": [], "model_sources": [],
         }, indent=1))
-        say(f"Pushing kernel {user}/{slug} (TPU v5e-8)...")
+        say(f"Pushing kernel {user}/{slug} ({args.model}, TPU v5e-8)...")
         r = kaggle("kernels", "push", "-p", str(td))
         out = (r.stdout or "") + (r.stderr or "")
         if "successfully pushed" not in out:
@@ -166,7 +216,8 @@ def cmd_serve(args):
                     "but may need to download weights / compile cold.")
 
     STATE_FILE.write_text(json.dumps(
-        {"kernel": f"{user}/{slug}", "topic": topic, "api_key": api_key}))
+        {"kernel": f"{user}/{slug}", "topic": topic, "api_key": api_key,
+         "model": args.model}))
     say("Pushed. Kaggle takes a few minutes to provision the TPU and attach the "
         "datasets; the endpoint is usually live ~22 min after the kernel starts.")
     say("Watching progress (Ctrl-C is safe — the server keeps running; "
@@ -234,8 +285,14 @@ def relay_from_env(api_key):
 def render_event(ev, relay=None):
     phase = ev.get("phase", "?")
     if phase == "compiling":
-        say(f"Loading / compiling... {ev.get('elapsed_s', 0) // 60} min elapsed "
-            "(typically ~20 min with the env dataset, ~35 min without)")
+        # Qwen sends elapsed_s; GLM sends what + secs
+        if "elapsed_s" in ev:
+            say(f"Loading / compiling... {ev['elapsed_s'] // 60} min elapsed "
+                "(typically ~20 min with the env dataset, ~35 min without)")
+        elif "what" in ev:
+            say(f"Compiling {ev['what']} ({ev.get('secs', 0)} s)")
+        else:
+            say(f"Compiling... {json.dumps({k: v for k, v in ev.items() if k != 'phase'})}")
     elif phase == "cache-restored":
         if ev.get("covers_this_config", True):
             say("XLA compile cache restored for this exact config — fast start.")
@@ -246,7 +303,7 @@ def render_event(ev, relay=None):
         say(f"Endpoint URL reserved: {ev.get('endpoint')}  (not live yet — wait for the banner)")
         register_with_relay(relay, ev.get("endpoint"))
     elif phase == "tunnel-failed":
-        say("PUBLIC TUNNEL FAILED — vLLM may be healthy, but it is not reachable from the internet.")
+        say("PUBLIC TUNNEL FAILED — server may be healthy, but it is not reachable from the internet.")
         if ev.get("note"):
             say(f"Tunnel detail: {ev['note']}")
     elif phase == "serving":
@@ -254,6 +311,12 @@ def render_event(ev, relay=None):
     elif phase == "benchmark":
         say(f"Quick benchmark: {ev.get('decode_tok_s', '?')} tok/s single-stream decode "
             f"(sanity: {ev.get('sanity', '')!r})")
+    elif phase == "loading":
+        say(f"Loading weights ({ev.get('note', '')})...")
+    elif phase == "loaded":
+        say(f"Weights loaded in {ev.get('minutes', '?')} min (HBM {ev.get('hbm_gb', '?')} GB/chip).")
+    elif phase == "warmed":
+        say(f"Warm-up done in {ev.get('minutes', '?')} min (HBM {ev.get('hbm_gb', '?')} GB/chip).")
     elif phase == "ready":
         if not ev.get("endpoint"):
             say("Server is healthy, but no public endpoint was created; relay registration was skipped.")
@@ -269,9 +332,8 @@ def render_event(ev, relay=None):
 Try it:
   curl $BASE/chat/completions -H "Authorization: Bearer $KEY" \\
     -H "Content-Type: application/json" -d '{
-      "model": "qwen3.8-27b",
-      "messages": [{"role": "user", "content": "Hello!"}],
-      "chat_template_kwargs": {"reasoning_effort": "low"}
+      "model": "MODEL_NAME",
+      "messages": [{"role": "user", "content": "Hello!"}]
     }'
 
 See the README for hooking this into Claude Code, Codex CLI, opencode, etc.
@@ -332,12 +394,13 @@ def cmd_build_env(args):
     check_auth()
     user = kaggle_username(args.user)
     topic = "ktl-" + uuid.uuid4().hex[:20]
+    model_cfg = MODELS["qwen"]  # build-env is Qwen-specific for now
     cfg = {"build_bundle": True, "ntfy_topic": topic, "weights_dataset": args.weights_dataset}
-    src = KERNEL_SRC.read_text()
+    src = model_cfg["kernel_src"].read_text()
     src, n = re.subn(r"^CFG = None  # __LAUNCHER_CONFIG__.*$",
                      f"CFG = {cfg!r}", src, count=1, flags=re.M)
     if n != 1:
-        sys.exit("kernel/serve_qwen38.py is missing the __LAUNCHER_CONFIG__ line")
+        sys.exit(f"{model_cfg['kernel_name']} is missing the __LAUNCHER_CONFIG__ line")
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         (td / "build_env.py").write_text(src)
@@ -353,7 +416,7 @@ def cmd_build_env(args):
         if "successfully pushed" not in out:
             sys.exit(f"Push failed:\n{out.strip()}")
     STATE_FILE.write_text(json.dumps({"kernel": f"{user}/{args.slug}", "topic": topic,
-                                      "api_key": ""}))
+                                      "api_key": "", "model": "qwen"}))
     say(f"Pushed {user}/{args.slug}. It serves each config once (~1.5 h total) and "
         "leaves xla_cache.tar / cloudflared / manifest.json in its output.")
     watch(f"{user}/{args.slug}", topic)
@@ -368,7 +431,7 @@ def load_state():
 def cmd_status(args):
     st = load_state()
     relay = relay_from_env(st["api_key"])
-    say(f"Kernel: {st['kernel']}")
+    say(f"Kernel: {st['kernel']}  (model: {st.get('model', 'qwen')})")
     r = kaggle("kernels", "status", st["kernel"])
     say(((r.stdout or "") + (r.stderr or "")).strip())
     events = read_events(st["topic"], int(time.time()) - 24 * 3600)
@@ -393,51 +456,66 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
+    # --- serve ---
     s = sub.add_parser("serve", help="push the serving kernel and watch it come up")
+    s.add_argument("--model", choices=["qwen", "glm"], default="qwen",
+                   help="which model to serve (default: qwen)")
     s.add_argument("--user", help="Kaggle username (auto-detected if possible)")
-    s.add_argument("--slug", default="qwen38-tpu-serve", help="kernel name")
-    s.add_argument("--max-model-len", type=int, default=262144,
-                   help="context length (default: native 262k; use 131072 with "
-                        "--max-num-seqs 16 for max multi-stream throughput)")
-    s.add_argument("--max-num-seqs", type=int, default=4)
+    s.add_argument("--slug", default=None,
+                   help="kernel name (default: per-model slug)")
+    s.add_argument("--max-model-len", type=int, default=None,
+                   help="context length (Qwen default: 262144; GLM default: 262144)")
+    s.add_argument("--max-num-seqs", type=int, default=4,
+                   help="max concurrent sequences (Qwen only)")
+    s.add_argument("--streams", type=int, default=None,
+                   help="concurrent decode streams (GLM only)")
     s.add_argument("--mtp", type=int, default=3,
-                   help="MTP speculative tokens (0 disables). +34%% decode in our A/B test; made "
-                        "lossless by the bundled GDN state-rollback patch "
-                        "(verified 12/12 greedy exact-match)")
-    s.add_argument("--reasoning-effort", default="xhigh",
-                   choices=["xhigh", "medium", "low"],
-                   help="server-side default; clients can still override per request")
+                   help="MTP speculative tokens (Qwen only; 0 disables)")
+    s.add_argument("--reasoning-effort", default=None,
+                   help="server-side default reasoning effort "
+                        "(Qwen: xhigh|medium|low; GLM: low|high)")
     s.add_argument("--keepalive-min", type=int, default=480,
                    help="auto-shutdown after this many minutes of serving")
-    s.add_argument("--weights-dataset", default=WEIGHTS_DATASET)
+    s.add_argument("--weights-dataset", default=None,
+                   help="override the weights dataset (Qwen only)")
     s.add_argument("--no-tools", action="store_true",
-                   help="disable tool-calling support")
+                   help="disable tool-calling support (Qwen only)")
     s.add_argument("--text-only", action="store_true",
-                   help="skip the vision tower: ~8 min faster start, image inputs "
-                        "then error out")
+                   help="skip the vision tower (Qwen only)")
+    s.add_argument("--vision", type=lambda x: x.lower() in ("true", "1", "yes"),
+                   default=None,
+                   help="enable/disable vision tower (GLM only)")
     s.add_argument("--verbose", action="store_true",
-                   help="show every vLLM log line in the kernel log")
+                   help="show verbose log lines in the kernel log")
     s.add_argument("--fast-start", action="store_true",
-                   help="skip TPU graph precompile: endpoint live in ~4 min (with the env "
-                        "dataset), common request shapes are warmed right after; an "
-                        "unusual request shape stalls ~1 min the first time")
+                   help="skip TPU graph precompile (Qwen only)")
     s.set_defaults(fn=cmd_serve)
 
+    # --- build-env (Qwen maintainer flow) ---
     s = sub.add_parser("build-env", help="(maintainers) push a kernel that builds the "
                        "env dataset: venv + XLA cache + cloudflared")
     s.add_argument("--user", help="Kaggle username (auto-detected if possible)")
     s.add_argument("--slug", default="qwen38-env-bundle")
-    s.add_argument("--weights-dataset", default=WEIGHTS_DATASET)
+    s.add_argument("--weights-dataset", default="rahim3/qwen3-8-27b-bf16")
     s.set_defaults(fn=cmd_build_env)
 
+    # --- status ---
     s = sub.add_parser("status", help="show current kernel status + recent events")
     s.add_argument("--follow", "-f", action="store_true", help="keep watching")
     s.set_defaults(fn=cmd_status)
 
+    # --- stop ---
     s = sub.add_parser("stop", help="terminate the TPU session")
     s.set_defaults(fn=cmd_stop)
 
     args = ap.parse_args()
+
+    # Set model-specific defaults for reasoning_effort
+    if args.cmd == "serve" and args.reasoning_effort is None:
+        args.reasoning_effort = "xhigh" if args.model == "qwen" else "low"
+    if args.cmd == "serve" and args.max_model_len is None:
+        args.max_model_len = 262144
+
     args.fn(args)
 
 
