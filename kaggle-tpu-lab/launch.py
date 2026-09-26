@@ -12,6 +12,8 @@ Requires the Kaggle CLI, authenticated:  pip install kaggle   (see README).
 Only the Python standard library is used here.
 """
 import argparse
+import base64
+import io
 import json
 import os
 import re
@@ -19,6 +21,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import urllib.request
@@ -43,6 +46,7 @@ MODELS = {
         ],
         "weights_dataset": "rahim3/qwen3-8-27b-bf16",
         "env_dataset": "rahim3/qwen38-tpu-env-v5e8",
+        "engine_dir": None,
     },
     "glm": {
         "kernel_src": HERE / "glm53-flash" / "kernel" / "serve_glm53.py",
@@ -56,6 +60,9 @@ MODELS = {
         ],
         "weights_dataset": None,
         "env_dataset": None,
+        # the kernel carries an __ENGINE__ slot: the glm53 package ships inside
+        # the pushed script (base64 tar.gz), so the kernel needs no glm53/ folder
+        "engine_dir": HERE / "glm53-flash" / "engine" / "glm53",
     },
 }
 
@@ -116,6 +123,47 @@ def kaggle_username(cli_arg):
     if m and m.group(1) not in ("None", "-"):
         return m.group(1).strip("'\"")
     sys.exit("Could not detect your Kaggle username — pass it with --user <name>.")
+
+
+def embed_engine(model_cfg):
+    """Base64 tar.gz of the engine package for kernels that carry an __ENGINE__
+    slot (GLM). The kernel extracts it to /kaggle/working/glm53 — the same
+    package the notebook's engine cell writes out. None for models without a
+    slot (Qwen)."""
+    engine_dir = model_cfg.get("engine_dir")
+    if not engine_dir:
+        return None
+    engine_dir = Path(engine_dir)
+    if not engine_dir.is_dir():
+        sys.exit(f"engine package not found at {engine_dir} — cannot embed it in the kernel")
+    files = [p for p in sorted(engine_dir.rglob("*.py"))
+             if "tests" not in p.parts and "__pycache__" not in p.parts]
+    if not files:
+        sys.exit(f"no engine files found under {engine_dir}")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for p in files:
+            tf.add(p, arcname=str(Path(engine_dir.name) / p.relative_to(engine_dir)))
+    say(f"Embedding engine package: {len(files)} files, "
+        f"{len(buf.getvalue()) / 1e6:.2f} MB compressed")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def build_kernel(model_cfg, cfg):
+    """Kernel source with the launcher config (and the engine package, if any)
+    injected. Returns (source, kernel_name)."""
+    src = model_cfg["kernel_src"].read_text()
+    src, n = re.subn(r"^CFG = None  # __LAUNCHER_CONFIG__.*$",
+                     f"CFG = {cfg!r}", src, count=1, flags=re.M)
+    if n != 1:
+        sys.exit(f"{model_cfg['kernel_name']} is missing the __LAUNCHER_CONFIG__ line")
+    engine_b64 = embed_engine(model_cfg)
+    if engine_b64 is not None:
+        src, m = re.subn(r"^ENGINE_B64 = .*__ENGINE__.*$",
+                         f'ENGINE_B64 = "{engine_b64}"', src, count=1, flags=re.M)
+        if m != 1:
+            sys.exit(f"{model_cfg['kernel_name']} is missing the __ENGINE__ line")
+    return src, model_cfg["kernel_name"]
 
 
 def cmd_serve(args):
@@ -183,19 +231,15 @@ def cmd_serve(args):
         if args.verbose:
             cfg["verbose"] = True
 
-    src = model_cfg["kernel_src"].read_text()
-    src, n = re.subn(r"^CFG = None  # __LAUNCHER_CONFIG__.*$",
-                     f"CFG = {cfg!r}", src, count=1, flags=re.M)
-    if n != 1:
-        sys.exit(f"{model_cfg['kernel_name']} is missing the __LAUNCHER_CONFIG__ line")
+    src, kernel_name = build_kernel(model_cfg, cfg)
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
-        (td / model_cfg["kernel_name"]).write_text(src)
+        (td / kernel_name).write_text(src)
         (td / "kernel-metadata.json").write_text(json.dumps({
             "id": f"{user}/{slug}",
             "title": slug,
-            "code_file": model_cfg["kernel_name"],
+            "code_file": kernel_name,
             "language": "python",
             "kernel_type": "script",
             "is_private": "true",
@@ -396,11 +440,7 @@ def cmd_build_env(args):
     topic = "ktl-" + uuid.uuid4().hex[:20]
     model_cfg = MODELS["qwen"]  # build-env is Qwen-specific for now
     cfg = {"build_bundle": True, "ntfy_topic": topic, "weights_dataset": args.weights_dataset}
-    src = model_cfg["kernel_src"].read_text()
-    src, n = re.subn(r"^CFG = None  # __LAUNCHER_CONFIG__.*$",
-                     f"CFG = {cfg!r}", src, count=1, flags=re.M)
-    if n != 1:
-        sys.exit(f"{model_cfg['kernel_name']} is missing the __LAUNCHER_CONFIG__ line")
+    src, _ = build_kernel(model_cfg, cfg)
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         (td / "build_env.py").write_text(src)
