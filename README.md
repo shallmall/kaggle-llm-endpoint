@@ -6,8 +6,9 @@ CLI, opencode or anything else at it. No GPU, no cloud bill, about twenty
 minutes from pressing Run to a URL.
 
 > **Based on** [ARahim3/kaggle-tpu-lab](https://github.com/ARahim3/kaggle-tpu-lab) —
-> this project extends the original with multi-model support (`--model qwen|glm`),
-> a Cloudflare Worker relay for permanent URLs, and a GLM-5.3-Flash JAX engine.
+> this project extends the original with multi-model support in the launcher
+> (`--model qwen|glm`, including the GLM engine packaging) and a Cloudflare
+> Worker relay for permanent URLs.
 
 Each model has its own folder with a run-all Kaggle notebook, the kernel
 script behind it, and a write-up of how it works and what we measured.
@@ -71,12 +72,10 @@ Kaggle session. Total one-time setup: ~15 minutes.
 
 ### 1. Deploy the Worker
 
-```bash
-mkdir -p ~/kaggle-tpu-relay
-cp worker/worker.js ~/kaggle-tpu-relay/worker.js
-cp worker/wrangler.jsonc ~/kaggle-tpu-relay/wrangler.jsonc
+The `worker/` folder at the repo root is the wrangler project as-is.
 
-cd ~/kaggle-tpu-relay
+```bash
+cd worker
 npm install -g wrangler
 wrangler login        # opens a browser tab — click Allow
 wrangler deploy
@@ -246,8 +245,9 @@ Registration succeeded but the model isn't serving yet. Wait for the READY
 banner in the `launch.py serve` terminal.
 
 **`cloudflared exited with code -11`**
-cloudflared crash, not a vLLM or auth issue. The launcher prefers a freshly
-downloaded binary; the bundled one is a fallback. Just re-run `launch.py serve`.
+cloudflared crash, not a vLLM or auth issue. The Qwen kernel prefers a freshly
+downloaded binary and falls back to the one bundled in the env dataset; the
+GLM kernel downloads one. Just re-run `launch.py serve`.
 
 **`AttributeError: __delitem__` in vLLM**
 The vllm-tpu 0.28.0 MTP + async scheduling bug. The launcher now passes
@@ -287,7 +287,7 @@ In order of likelihood:
 
 To see exactly what the Worker received:
 ```bash
-cd ~/kaggle-tpu-relay && wrangler tail
+cd worker && wrangler tail
 ```
 
 ---
@@ -311,7 +311,7 @@ Anthropic streaming, tool calls, the thinking budget, `count_tokens`, and the
 
 ## Adding a model
 
-One folder at the top level, named after the model:
+One folder inside `kaggle-tpu-lab/`, named after the model:
 - `README.md` — the numbers and the how
 - `kernel/` — the serving script (with the `CFG = None  # __LAUNCHER_CONFIG__` line)
 - `notebook/` — the run-all notebook generated from it
