@@ -14,8 +14,8 @@ script behind it, and a write-up of how it works and what we measured.
 
 | Model | Weights on the TPU | Context | One stream | Many streams | Prefill | Run → URL | Engine |
 |-------|-------------------|---------|------------|--------------|---------|-----------|--------|
-| [Qwen3.8-27B](qwen38-27b/) | bf16, no quantization | 262k | ~130 tok/s | ~540 tok/s at 8 | 10,300 tok/s | ~22 min | vllm-tpu + one patch |
-| [GLM-5.3-Flash](glm53-flash/) (320B MoE) | 3-bit experts, int8 rest | 262k | ~64 tok/s | ~90 tok/s at 3 | ~1,600 tok/s | ~16 min | our own JAX engine |
+| [Qwen3.8-27B](kaggle-tpu-lab/qwen38-27b/) | bf16, no quantization | 262k | ~130 tok/s | ~540 tok/s at 8 | 10,300 tok/s | ~22 min | vllm-tpu + one patch |
+| [GLM-5.3-Flash](kaggle-tpu-lab/glm53-flash/) (320B MoE) | 3-bit experts, int8 rest | 262k | ~64 tok/s | ~90 tok/s at 3 | ~1,600 tok/s | ~16 min | our own JAX engine |
 
 Numbers are measured on the shipped configuration; the folder READMEs say how.
 Qwen runs on vllm-tpu with one patch. GLM-5.3-Flash runs on an engine we wrote
@@ -47,13 +47,13 @@ in JAX for it; as far as we know it is the first to run that model on a TPU.
 ## Quick start (terminal)
 
 ```bash
-git clone https://github.com/ARahim3/kaggle-tpu-lab.git
+# from this repo's kaggle-tpu-lab/ folder:
 cd kaggle-tpu-lab
 
 # Qwen3.8-27B (default):
 python launch.py serve
 
-# GLM-5.3-Flash:
+# GLM-5.3-Flash (the launcher embeds its JAX engine into the pushed kernel):
 python launch.py serve --model glm
 ```
 
@@ -254,6 +254,13 @@ The vllm-tpu 0.28.0 MTP + async scheduling bug. The launcher now passes
 `--no-async-scheduling` automatically. If you see this, your `launch.py` is
 out of date — pull the latest.
 
+**GLM fails at step 1/6: `no glm53/ package next to this script`**
+The pushed kernel did not get the engine package. `launch.py` embeds it into
+the script at push time, so step 1/6 must print
+`engine package extracted to /kaggle/working/glm53` before anything else
+happens. If the line is missing, your `launch.py` is out of date — pull the
+latest.
+
 **Session died / Kaggle kernel timed out**
 Kaggle kernels cap at ~9 h. Just run `python launch.py serve` again — a new
 tunnel gets generated and auto-registered. Your agent settings don't change.
@@ -282,6 +289,23 @@ To see exactly what the Worker received:
 ```bash
 cd ~/kaggle-tpu-relay && wrangler tail
 ```
+
+---
+
+## Local verification (no TPU needed)
+
+The GLM serving script and its JAX engine can be smoke-tested on a plain CPU
+machine — no Kaggle account, no TPU:
+
+```bash
+kaggle-tpu-lab/glm53-flash/tools/verify_local.sh          # launcher build check + full kernel smoke test
+kaggle-tpu-lab/glm53-flash/tools/verify_local.sh --full   # + the engine unit test suite (slow on a laptop)
+```
+
+The smoke test runs the actual `serve_glm53.py` end-to-end against a tiny
+engine with the real GLM tokenizer: the kernel's self-test, OpenAI and
+Anthropic streaming, tool calls, the thinking budget, `count_tokens`, and the
+429 queue.
 
 ---
 
