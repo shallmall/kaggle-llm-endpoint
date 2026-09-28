@@ -13,8 +13,8 @@ twenty minutes from pressing Run to a live URL.
 
 | Model | Weights on the TPU | Context | One stream | Many streams | Prefill | Run → URL | Engine |
 |-------|--------------------|---------|------------|--------------|---------|-----------|--------|
-| [Qwen3.8-27B](kaggle-tpu-lab/qwen38-27b/) | bf16, no quantization | 262k | ~130 tok/s | ~540 tok/s at 8 | 10,300 tok/s | ~22 min | vllm-tpu + one patch |
-| [GLM-5.3-Flash](kaggle-tpu-lab/glm53-flash/) (320B MoE) | 3-bit experts, int8 rest | 262k | ~64 tok/s | ~90 tok/s at 3 | ~1,600 tok/s | ~16 min | custom JAX engine |
+| [Qwen3.8-27B](kaggle-llm-endpoint/qwen38-27b/) | bf16, no quantization | 262k | ~130 tok/s | ~540 tok/s at 8 | 10,300 tok/s | ~22 min | vllm-tpu + one patch |
+| [GLM-5.3-Flash](kaggle-llm-endpoint/glm53-flash/) (320B MoE) | 3-bit experts, int8 rest | 262k | ~64 tok/s | ~90 tok/s at 3 | ~1,600 tok/s | ~16 min | custom JAX engine |
 
 Each model folder has a run-all Kaggle notebook, the kernel script behind it,
 and a README with the numbers and the how.
@@ -55,7 +55,7 @@ curl <ENDPOINT>/v1/chat/completions -H "Authorization: Bearer <KEY>" \
 ## Quick start
 
 ```bash
-cd kaggle-tpu-lab
+cd kaggle-llm-endpoint
 
 python launch.py serve                  # Qwen3.8-27B (default)
 python launch.py serve --model glm      # GLM-5.3-Flash (engine auto-embedded)
@@ -133,13 +133,13 @@ cap). Boot again for a fresh session and URL.
 ## Local verification (no TPU needed)
 
 ```bash
-kaggle-tpu-lab/glm53-flash/tools/verify_local.sh          # launcher check + kernel smoke test
-kaggle-tpu-lab/glm53-flash/tools/verify_local.sh --full   # + engine unit tests (slow)
+kaggle-llm-endpoint/glm53-flash/tools/verify_local.sh          # launcher check + kernel smoke test
+kaggle-llm-endpoint/glm53-flash/tools/verify_local.sh --full   # + engine unit tests (slow)
 ```
 
 ## Adding a model
 
-One folder inside `kaggle-tpu-lab/` named after the model: `README.md`,
+One folder inside `kaggle-llm-endpoint/` named after the model: `README.md`,
 `kernel/` (serving script with the `__LAUNCHER_CONFIG__` line), `notebook/`,
 plus whatever the recipe needs. Then add an entry to `MODELS` in `launch.py`.
 
