@@ -51,7 +51,7 @@ DEFAULTS = {
     "think_budget_default": 0,       # thinking tokens before </think> is forced, when the request sets no budget (0 = unlimited)
     "vision": True,                  # load the vision tower (images in both APIs); False saves ~1 min and 0.14 GB/chip
     "vision_max_tokens": 1024,       # 28x28-pixel tokens per image
-    "reasoning_effort_default": "low",   # server-side default: low | high (anything else = the template's Max)
+    "reasoning_effort_default": "high",  # server-side default: low | high (anything else = the template's Max)
     "temperature": 1.0, "top_p": 0.95,   # generation_config defaults
     "max_new_default": 4096,
     "snap_host_gb": 48,              # host RAM for parked contexts (agent sessions that interleave)

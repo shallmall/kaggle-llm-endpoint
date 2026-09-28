@@ -3,7 +3,7 @@
 kaggle-tpu-lab launcher — serve LLMs on a free Kaggle TPU from your terminal.
 
     python launch.py serve                          # Qwen3.8-27B (default)
-    python launch.py serve --model glm              # GLM-5.3-Flash
+    python launch.py serve --model glm              # GLM-5.3-Flash (high reasoning)
     python launch.py serve --model glm --reasoning-effort low
     python launch.py status                         # one-shot status + recent events
     python launch.py stop                           # kill the TPU session
@@ -552,7 +552,7 @@ def main():
 
     # Set model-specific defaults for reasoning_effort
     if args.cmd == "serve" and args.reasoning_effort is None:
-        args.reasoning_effort = "xhigh" if args.model == "qwen" else "low"
+        args.reasoning_effort = "xhigh" if args.model == "qwen" else "high"
     if args.cmd == "serve" and args.max_model_len is None:
         args.max_model_len = 262144
 

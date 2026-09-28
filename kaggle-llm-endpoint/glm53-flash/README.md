@@ -69,7 +69,7 @@ export OPENAI_API_KEY="glm-<your-key>"
 
 Per request you can set `reasoning_effort` (`low` or `high`; via `chat_template_kwargs` on the
 OpenAI API or the `thinking` field on the Anthropic one), a thinking budget, `stop_sequences` /
-`stop`, `tool_choice`, and temperature / top_p. The server default is `low` reasoning; change it
+`stop`, `tool_choice`, and temperature / top_p. The server default is `high` reasoning; change it
 with `--reasoning-effort` or in the notebook's config cell.
 
 The thinking budget is worth knowing about: GLM can reason for tens of thousands of tokens on an
