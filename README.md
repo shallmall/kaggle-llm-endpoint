@@ -19,6 +19,21 @@ twenty minutes from pressing Run to a live URL.
 Each model folder has a run-all Kaggle notebook, the kernel script behind it,
 and a README with the numbers and the how.
 
+**Exact model names for API calls** (use these in the `"model"` field or
+`ANTHROPIC_MODEL`):
+
+| Model | `"model"` value |
+|-------|-----------------|
+| Qwen3.8-27B | `qwen3.8-27b` |
+| GLM-5.3-Flash | `glm-5.3-flash` |
+
+Example:
+```bash
+curl <ENDPOINT>/v1/chat/completions -H "Authorization: Bearer <KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "qwen3.8-27b", "messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
 ## What you need
 
 - A **Kaggle account** with phone verification (required for TPU access) and
