@@ -39,6 +39,8 @@ in JAX for it; as far as we know it is the first to run that model on a TPU.
   mv ~/Downloads/kaggle.json ~/.kaggle/kaggle.json
   chmod 600 ~/.kaggle/kaggle.json
   ```
+  On Windows (and macOS) the file goes in the same folder: `%USERPROFILE%\.kaggle\kaggle.json`
+  (Windows) or `~/.kaggle/kaggle.json` (macOS/Linux — the commands above).
 - **A free Cloudflare account** (no domain, no credit card) for the permanent
   URL relay.
 - **Node.js + npm** (for `wrangler`, the Cloudflare CLI).

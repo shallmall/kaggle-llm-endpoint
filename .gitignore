@@ -54,3 +54,9 @@ desktop.ini
 *Example:*
 *Check status*
 *Stop the TPU*
+
+# uv scaffolding (not used by this repo's flow; run `pip install kaggle` instead)
+pyproject.toml
+uv.lock
+.python-version
+src/
