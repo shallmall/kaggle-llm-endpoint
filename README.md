@@ -143,6 +143,39 @@ One folder inside `kaggle-llm-endpoint/` named after the model: `README.md`,
 `kernel/` (serving script with the `__LAUNCHER_CONFIG__` line), `notebook/`,
 plus whatever the recipe needs. Then add an entry to `MODELS` in `launch.py`.
 
+## Security
+
+- The endpoint is **publicly reachable** through a Cloudflare tunnel and
+  protected only by a bearer API key.
+- **Never commit** `kaggle.json`, `KTL_API_KEY`, `UPDATE_SECRET`, or
+  `CLIENT_API_KEY`.
+- Use a long random `CLIENT_API_KEY` (e.g. `openssl rand -hex 32`).
+- If a key leaks: rotate it with `wrangler secret put CLIENT_API_KEY`, then
+  restart the session with `python launch.py stop` followed by `serve`.
+- **Rate limiting: no.** The Worker checks bearer keys (constant-time
+  compare) and rejects stale sessions (>9 h without re-registration), but
+  there is no throttling — anyone holding `CLIENT_API_KEY` can use your
+  quota freely.
+- **Logging:** the Worker itself logs nothing (only Cloudflare's standard
+  dashboard metrics). The kernel writes everything the server prints —
+  including request content — to `vllm.log` in the Kaggle session's working
+  directory. That stays private unless you share kernel output.
+- Prompts and responses pass through Cloudflare and Kaggle infrastructure.
+  Don't send secrets or private data you wouldn't put on a third-party
+  service.
+
+## Limits and terms
+
+- Kaggle's free TPU quota is roughly **20 hours/week** and sessions cap at
+  ~9 hours (the kernel's `keepalive_min` defaults to 8 h for that reason).
+- Check [Kaggle's Terms of Use](https://www.kaggle.com/terms) before use.
+  Running a publicly exposed service on free notebook compute may be
+  restricted, and accounts can be limited for misuse. You are responsible
+  for compliance.
+- This is intended for **personal development and experimentation**, not
+  production traffic.
+- Model weights are subject to their own licenses (see each model folder).
+
 ## Credits
 
 - [ARahim3/kaggle-tpu-lab](https://github.com/ARahim3/kaggle-tpu-lab) — the
