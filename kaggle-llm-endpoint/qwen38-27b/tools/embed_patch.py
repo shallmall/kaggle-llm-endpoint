@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-"""Re-embed patches/mtp-rollback-v0280.diff into kernel/serve_qwen38.py (paths relative to this model folder).
+"""Re-embed patches/*.diff into kernel/serve_qwen38.py (paths relative to this model folder).
 
-Run after editing the patch file:  python qwen38-27b/tools/embed_patch.py
+Currently embedded (applied in this order by apply_mtp_patch):
+  - mtp-rollback-v0280.diff      GDN state rollback on rejected draft tokens
+  - spec-draft-rows-v0280.diff   coerce draft-token rows to mutable lists so
+                                 async scheduling + structured outputs don't
+                                 crash on immutable rows
+
+Run after editing a patch file:  python qwen38-27b/tools/embed_patch.py
 """
 import base64
 import gzip
@@ -9,7 +15,11 @@ import re
 from pathlib import Path
 
 repo = Path(__file__).resolve().parent.parent
-diff = (repo / "patches" / "mtp-rollback-v0280.diff").read_bytes()
+patches_dir = repo / "patches"
+diff = b"".join((patches_dir / name).read_bytes() for name in (
+    "mtp-rollback-v0280.diff",
+    "spec-draft-rows-v0280.diff",
+))
 blob = base64.b64encode(gzip.compress(diff, 9)).decode()
 
 script_path = repo / "kernel" / "serve_qwen38.py"

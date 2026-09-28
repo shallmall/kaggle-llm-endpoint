@@ -1,0 +1,20 @@
+--- a/tpu_inference/runner/speculative_decoding_manager.py
++++ b/tpu_inference/runner/speculative_decoding_manager.py
+@@ -49,6 +49,17 @@
+         req_ids = self.runner.input_batch.req_ids
+         draft_token_ids = self._draft_token_ids
+ 
++        # Coerce every row to a fresh, mutable list of plain ints before the
++        # rows reach the scheduler. The async-scheduling proposer stores a 2D
++        # jax/numpy array here, and vllm's update_draft_token_ids_in_output
++        # mutates the rows in place (del row[n:], row.extend(...)); immutable
++        # rows (device-array rows, tuples) make that raise. Copies also stop
++        # the scheduler from aliasing device-owned buffers.
++        num_spec = self.runner.speculative_config.num_speculative_tokens
++        draft_token_ids = [
++            [int(t) for t in row[:num_spec]] for row in draft_token_ids
++        ]
++
+         if self._req_indices_dp is None:
+             self._draft_token_ids = None
+             self._req_indices_dp = None
