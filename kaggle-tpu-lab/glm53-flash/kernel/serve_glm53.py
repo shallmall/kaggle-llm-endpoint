@@ -302,7 +302,8 @@ if "eng" not in globals():
     ids = np.asarray(tok(tok.apply_chat_template([{"role": "user", "content": "Write a haiku about tensor processing units."}],
                                                  tokenize=False, add_generation_prompt=True, reasoning_effort="low"),
                          add_special_tokens=False).input_ids).reshape(1, -1)
-    eos = set(json.load(open(os.path.join(hf_dir, "config.json")))["text_config"].get("eos_token_id", [tok.eos_token_id]))
+    eos_cfg = json.load(open(os.path.join(hf_dir, "config.json")))["text_config"].get("eos_token_id", [tok.eos_token_id])
+    eos = set(eos_cfg) if isinstance(eos_cfg, list) else {eos_cfg}
 
 # ----------------------------------------------------------------------------- 3. vision tower
 VISION, VISION_FWD = globals().get("VISION"), globals().get("VISION_FWD")
