@@ -68,7 +68,12 @@ DEFAULTS = {
     "port": 8000,
 }
 CFG = {**DEFAULTS, **(CFG or {}), **globals().get("CFG_PRESET", {})}
-_cfg_file = Path("serve_config.json")            # notebook flow: overrides next to this script
+# notebook flow: overrides next to this script (falls back to the working
+# directory when pasted into a notebook, where __file__ does not exist)
+try:
+    _cfg_file = Path(__file__).resolve().parent / "serve_config.json"
+except NameError:
+    _cfg_file = Path("serve_config.json")
 if _cfg_file.exists():
     CFG.update(json.loads(_cfg_file.read_text()))
 if not CFG["api_key"]:

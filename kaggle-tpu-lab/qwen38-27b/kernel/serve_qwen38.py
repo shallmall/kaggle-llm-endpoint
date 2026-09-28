@@ -72,8 +72,13 @@ DEFAULTS = {
     "build_bundle": False,         # maintainer mode: build the env dataset instead of serving
 }
 CFG = {**DEFAULTS, **(CFG or {})}
-# Notebook flow: drop overrides in a serve_config.json next to this script.
-_cfg_file = Path("serve_config.json")
+# Notebook flow: drop overrides in a serve_config.json next to this script
+# (falls back to the working directory when pasted into a notebook, where
+# __file__ does not exist).
+try:
+    _cfg_file = Path(__file__).resolve().parent / "serve_config.json"
+except NameError:
+    _cfg_file = Path("serve_config.json")
 if _cfg_file.exists():
     CFG.update(json.loads(_cfg_file.read_text()))
 if not CFG["api_key"]:
@@ -358,11 +363,16 @@ def server_args(cfg):
         # The chat template defaults reasoning_effort to 'xhigh'; ship a copy with a
         # different default so the server-side default changes without client changes.
         tc = json.loads(Path(model_path, "tokenizer_config.json").read_text())
-        template = tc["chat_template"].replace(
-            "reasoning_effort|default('xhigh')",
-            f"reasoning_effort|default('{cfg['reasoning_effort_default']}')")
-        Path("/tmp/chat_template.jinja").write_text(template)
-        args += ["--chat-template", "/tmp/chat_template.jinja"]
+        template = tc.get("chat_template")
+        marker = "reasoning_effort|default('xhigh')"
+        if not isinstance(template, str) or marker not in template:
+            log("   WARNING: could not override reasoning_effort (chat_template missing, "
+                "not a plain string, or without the default-effort marker) -> serving "
+                "with the checkpoint's own default (xhigh)")
+        else:
+            Path("/tmp/chat_template.jinja").write_text(template.replace(
+                marker, f"reasoning_effort|default('{cfg['reasoning_effort_default']}')"))
+            args += ["--chat-template", "/tmp/chat_template.jinja"]
     return args
 
 
@@ -629,6 +639,10 @@ BUILD_CONFIGS = [
     {"max_model_len": 262144, "max_num_seqs": 4, "mtp_tokens": 3, "text_only": True},
 ]
 if CFG["build_bundle"]:
+    # fast_start must not leak into the cache-populating launches, or the
+    # packed xla_cache.tar would be mostly empty.
+    os.environ.pop("SKIP_JAX_PRECOMPILE", None)
+    CFG["fast_start"] = False
     banner(4, "BUILD MODE", "serving each config once to populate the XLA cache")
     log("   TPU-related env:", {k: v for k, v in os.environ.items() if "TPU" in k or "PJRT" in k})
     results = {}
