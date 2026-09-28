@@ -1,4 +1,4 @@
-# kaggle-tpu-lab
+# kaggle-llm-endpoint
 
 Run frontier-class open models on Kaggle's **free TPU v5e-8** and get a public
 endpoint that speaks the **OpenAI and Anthropic APIs**. Point Claude Code,
