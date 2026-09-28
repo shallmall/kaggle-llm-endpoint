@@ -1,5 +1,6 @@
 MIT License
 
+Copyright (c) 2026 Abdur Rahim (ARahim3/kaggle-tpu-lab)
 Copyright (c) 2025 shallmall
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
