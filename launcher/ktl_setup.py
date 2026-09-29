@@ -22,9 +22,12 @@ import re
 import shlex
 import shutil
 import stat
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
+import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -306,24 +309,83 @@ def _step_kaggle(ctx: Ctx, cfg: dict, args):
     say(f"ok    : Kaggle authenticated as {user}")
 
 
+def _run_device_login(ctx: Ctx, cmd: list, timeout: int = 600) -> str:
+    """Run an interactive login streaming its merged output line by line, so
+    the user sees wrangler's progress (and the code) live. Like run_logged,
+    every line is redacted before being echoed / appended to the wizard log.
+    Returns the full raw output; raises SubprocessError on failure/timeout."""
+    ctx.log("$ " + " ".join(str(c) for c in cmd))
+    proc = subprocess.Popen([str(c) for c in cmd],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True)
+    deadline = time.monotonic() + timeout
+    chunks = []
+    try:
+        while True:
+            line = proc.stdout.readline()
+            if line == "":
+                if proc.poll() is not None:
+                    break
+                if time.monotonic() > deadline:
+                    proc.kill()
+                    raise SubprocessError(
+                        f"`{cmd[0]}` timed out after {timeout}s",
+                        "The login request expired — re-run the step.")
+                time.sleep(0.05)
+                continue
+            line = line.rstrip("\r\n")
+            if line.strip():
+                rl = ktl_common.redact(line)
+                print(rl, flush=True)
+                ctx.log(rl)
+            chunks.append(line)
+    finally:
+        proc.stdout.close()
+    if proc.wait(timeout=30) != 0:
+        raise SubprocessError(f"`{' '.join(str(c) for c in cmd)}` failed "
+                              f"(exit {proc.returncode})")
+    return "\n".join(chunks)
+
+
 def _device_login(ctx: Ctx) -> str:
     """OAuth 2.0 Device Authorization Grant (RFC 8628). This is the ONLY login
     the wizard uses: wrangler prints a verification URL and a one-time code,
     then polls until it is approved in a browser — on any machine, over SSH,
-    headless, or on a desktop. No localhost callback server, nothing else can
-    time out. Returns the account name."""
+    headless, or on a desktop. The child's output is streamed so the exact
+    verification URL (with the code baked in) can then be echoed as a
+    copyable link. Returns the account name."""
     say("using the DEVICE login (OAuth 2.0 device flow) — approve it in any browser")
     print("1) open https://dash.cloudflare.com/oauth2/device in a browser")
     print("   on the machine you normally use (your own computer).")
     print("2) enter the code wrangler prints below and click Approve.")
     print("   This terminal waits and finishes automatically.")
+    print()
     try:
-        _run(ctx, ktl_common.wrangler_cmd("login", "--device"),
-             inherit_stdio=True, timeout=600)
+        out = _run_device_login(
+            ctx, ktl_common.wrangler_cmd("login", "--device"))
     except SubprocessError:
         sys.exit("The device login did not complete (see the error above). "
                  "Open the URL, enter the code and click Approve, then "
                  "re-run: python launch.py setup --only cloudflare")
+    print()
+    url = re.search(r"https://\S+user_code=[A-Za-z0-9]+", out)
+    if url:
+        url = url.group(0).rstrip(".,;)")
+        print("Open this URL in your browser (the code is already in it):")
+        print("  " + url)
+        print("Click Approve — this terminal finishes on its own.")
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+    else:
+        m = re.search(r"https://[^\s]+", out)
+        code = re.search(r"enter the code:\s*\n+\s*([A-Za-z0-9]{4,})", out)
+        if m:
+            print("Open this URL in your browser, then enter the code:")
+            print("  " + m.group(0).rstrip(".,;)"))
+            print("  code: " + (code.group(1) if code else "see above"))
     try:
         who = _parse_whoami(_whoami())
     except SubprocessError:
