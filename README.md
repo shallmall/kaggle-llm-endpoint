@@ -36,10 +36,8 @@ Additions here:
 
 ## Models
 
-| Model | Weights on the TPU | Context | One stream | Many streams | Prefill | Run → URL | Engine |
-|-------|--------------------|---------|------------|--------------|---------|-----------|--------|
-| [Qwen3.8-27B](launcher/qwen38-27b/) | bf16, no quantization | 262k | ~130 tok/s | ~540 tok/s at 8 | 10,300 tok/s | ~22 min | vllm-tpu + one patch |
-| [GLM-5.3-Flash](launcher/glm53-flash/) (320B MoE) | 3-bit experts, int8 rest | 262k | ~64 tok/s | ~90 tok/s at 3 | ~1,600 tok/s | ~16 min | custom JAX engine |
+- **[Qwen3.8-27B](launcher/qwen38-27b/)** — bf16, no quantization
+- **[GLM-5.3-Flash](launcher/glm53-flash/)** (320B MoE) — 3-bit experts, int8 rest
 
 Each model folder has a run-all Kaggle notebook, the kernel script behind it,
 and a README with the numbers and the how.
