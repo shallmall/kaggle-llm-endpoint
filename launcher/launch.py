@@ -117,10 +117,13 @@ def main():
     s.set_defaults(fn=ktl_env.cmd_env)
 
     # --- setup (guided installer) ---
-    s = sub.add_parser("setup", help="guided installer: prerequisites -> Worker -> TPU -> clients",
-                       description="Takes a fresh machine from clone to a working, tested "
-                                   "endpoint. Each step is idempotent and resumable; "
-                                   "state lives in ~/.ktl/config.json.")
+    s = sub.add_parser("setup", help="guided installer: prerequisites -> Worker -> clients",
+                       description="Configures a fresh machine (prerequisites, Cloudflare "
+                                   "login, Worker relay, secrets, AI-client configs) "
+                                   "without starting a TPU session. Each step is "
+                                   "idempotent and resumable; state lives in "
+                                   "~/.ktl/config.json. Boot the TPU later with "
+                                   "`python launch.py serve`.")
     s.add_argument("--yes", action="store_true",
                    help="answer yes to every prompt (quota warnings are still logged)")
     s.add_argument("--dry-run", action="store_true",

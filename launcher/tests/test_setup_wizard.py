@@ -357,8 +357,11 @@ class TestHappyPath(WizardBase):
 
         cfg = load_config(migrate=False)
         self.assertEqual(set(cfg["steps"]), set(ktl_common.STEP_NAMES))
-        for step in ktl_common.STEP_NAMES:
+        for step in ktl_setup.WIZARD_STEPS:
             self.assertEqual(cfg["steps"][step], "done", f"step {step}: {out}")
+        # serve is no longer part of the wizard — it stays untried until the
+        # user explicitly boots a TPU with `python launch.py serve`
+        self.assertEqual(cfg["steps"]["serve"], "pending")
         self.assertEqual(cfg["model"], "qwen")
         self.assertEqual(cfg["kaggle"]["username"], "fakeuser")
         self.assertEqual(cfg["cloudflare"]["relay_url"],
@@ -367,21 +370,16 @@ class TestHappyPath(WizardBase):
         self.assertEqual(len(cfg["secrets"]["client_api_key"]), 43)
         self.assertEqual(len(cfg["secrets"]["update_secret"]), 43)
 
+        # config-only wizard: never boots a TPU and never runs the matrix
+        push.assert_not_called()
+        self.assertNotIn("start the TPU session", out)
+        self.assertNotIn("compatibility matrix", out)
+
         # the summary prints the endpoint URL (paired with the key) so clients
         # know exactly where to talk to and what to send
         self.assertIn("endpoint   : https://fake-worker.fakeacct.workers.dev", out)
         self.assertIn("clients use https://fake-worker.fakeacct.workers.dev/v1", out)
         self.assertIn(f"key        : {ktl_common.mask(cfg['secrets']['client_api_key'])}", out)
-
-        # TPU push called with the relay dict and stop_after_ready
-        push.assert_called_once()
-        args_pos, kwargs = push.call_args
-        relay = kwargs["relay"]
-        self.assertEqual(relay["url"], "https://fake-worker.fakeacct.workers.dev")
-        self.assertEqual(relay["secret"], cfg["secrets"]["update_secret"])
-        self.assertTrue(kwargs["stop_after_ready"])
-        self.assertEqual(push.call_args[0][0], "qwen")
-        self.assertEqual(push.call_args[0][1], "fakeuser")
 
         # secrets went to wrangler on STDIN, never argv
         secrets_map = self.stdin_secret_map()
@@ -424,9 +422,9 @@ class TestHappyPath(WizardBase):
         rc, out = self.run_setup()
         self.assertEqual(rc, 0, out)
         self.assertEqual(ktl_common.config_path().read_bytes(), before)
-        for step in ktl_common.STEP_NAMES:
+        for step in ktl_setup.WIZARD_STEPS:
             self.assertIn(f"skip  : {step}", out)
-        self.assertEqual(out.count("  skip  : "), len(ktl_common.STEP_NAMES))
+        self.assertEqual(out.count("  skip  : "), len(ktl_setup.WIZARD_STEPS))
 
 
 class TestGates(WizardBase):
@@ -481,36 +479,28 @@ class TestGates(WizardBase):
         self.assertEqual(rc, 0, buf.getvalue())
         cfg = load_config(migrate=False)
         self.assertEqual(cfg["steps"]["worker"], "done")
-        self.assertEqual(cfg["steps"]["serve"], "done")
+        self.assertEqual(cfg["steps"]["serve"], "pending")
         self.assertFalse((self.home / ".codex").exists())
 
 
 class TestResume(WizardBase):
-    def test_failed_serve_is_retried_and_earlier_steps_skipped(self):
+    def test_failed_serve_is_retried_via_only(self):
+        """serve is not part of the config-only wizard, but `--only serve`
+        still boots a TPU and keeps the resume/failure semantics."""
         self.whoami_file.touch()
         # run 1: serve fails
         boom = mock.Mock(side_effect=SubprocessError("fake push failed", "hint"))
         self.patch_serve_and_matrix(push=boom)
-        rc, out1 = self.run_setup()
+        rc, out1 = self.run_setup(only="serve")
         self.assertEqual(rc, 1)
         cfg = load_config(migrate=False)
         self.assertEqual(cfg["steps"]["serve"], "failed")
-        self.assertEqual(cfg["steps"]["worker"], "done")
 
         # run 2: everything green
         self.patch_serve_and_matrix()  # replace the patch with a good one
-        rc, out2 = self.run_setup()
+        rc, out2 = self.run_setup(only="serve")
         self.assertEqual(rc, 0, out2)
-        cfg = load_config(migrate=False)
-        for step in ("prereqs", "kaggle", "cloudflare", "secrets",
-                     "worker", "serve", "clients"):
-            self.assertEqual(cfg["steps"][step], "done", out2)
-
-        # run 2 must NOT re-deploy or re-put the worker secrets
-        deploys = [ln for ln in self.record_lines("npx|") if "deploy" in ln]
-        self.assertEqual(len(deploys), 1)
-        puts = [ln for ln in self.record_lines("npx|") if "secret put" in ln]
-        self.assertEqual(len(puts), 2)  # only run 1's worker step
+        self.assertEqual(load_config(migrate=False)["steps"]["serve"], "done")
 
 
 class TestAdoptAndRotate(WizardBase):

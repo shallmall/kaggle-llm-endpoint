@@ -17,9 +17,10 @@ Additions here:
   engine, auto-embedded at launch time.
 - **Permanent-URL relay** — the `worker/` Cloudflare Worker keeps one stable
   endpoint across reboots, so agent settings never change.
-- **Guided setup wizard + doctor** — `python launch.py setup` walks a fresh
-  machine from clone to a tested endpoint (8 idempotent, resumable steps with
-  four approvals and browser/token logins); `python launch.py doctor` is a
+- **Guided setup wizard + doctor** — `python launch.py setup` configures a
+  fresh machine (8 idempotent, resumable steps, browser/device logins,
+  deploy/confirm approvals) **without touching a TPU**; you boot a session
+  later with `python launch.py serve`; `python launch.py doctor` is a
   read-only health report with fix hints, safe to paste into bug reports.
 - **One config file** — everything durable (Kaggle username, worker name,
   relay URL, the two relay secrets, per-step progress) lives atomically in
@@ -84,22 +85,24 @@ cd launcher
 python launch.py setup
 ```
 
-`setup` walks a fresh machine end-to-end: prerequisites → Kaggle login →
-Cloudflare Worker (your permanent URL) → generated secrets → TPU session →
-live compatibility test → your AI clients. Every step is idempotent and
-resumable; you approve four moments (deploy the Worker, confirm the URL,
-start the TPU session, configure your clients). When it finishes, the
-compatibility matrix is green and your clients point at a permanent URL.
+`setup` configures a fresh machine: prerequisites → Kaggle login →
+Cloudflare login → generated secrets → Cloudflare Worker (your permanent
+relay URL) → your AI clients. Every step is idempotent and resumable; you
+approve two moments (deploy the Worker, confirm the URL). It **never starts
+a TPU session and spends zero quota** — the config finishes in ~2 minutes,
+then you boot a TPU whenever you actually want to use the endpoint:
 
 ```bash
 python launch.py doctor                 # read-only health report, safe to paste
-python launch.py serve                  # (re)start the TPU session — Qwen3.8-27B (default)
+python launch.py serve                  # boot the TPU — Qwen3.8-27B (default)
 python launch.py serve --model glm      # GLM-5.3-Flash (engine auto-embedded)
+python launch.py env --test             # verify the live endpoint (compatibility matrix)
 ```
 
-`serve` pushes the kernel, watches progress live, and registers the session
-with your relay when it's ready. Prefer to do it all by hand (token, wrangler,
-direct mode)? The full manual path lives in
+Boot the TPU only when you need it (it drains ~20 h/week of Kaggle quota and
+auto-shuts down ~8 h idle). `serve` pushes the kernel, watches progress live,
+and registers the session with your relay when it's ready. Prefer to do it
+all by hand (token, wrangler, direct mode)? The full manual path lives in
 [docs/setup-manual.md](docs/setup-manual.md).
 
 ```mermaid
@@ -118,7 +121,7 @@ sequenceDiagram
 ## Useful commands
 
 ```bash
-python launch.py setup                  # guided install (fresh machine -> tested endpoint)
+python launch.py setup                  # guided install (config-only: no TPU, no quota)
 python launch.py doctor                 # read-only health report (exit 0 = healthy)
 
 python launch.py status --follow        # re-attach / follow a running session

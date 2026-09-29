@@ -2,9 +2,12 @@
 Guided setup wizard (`python launch.py setup`) and read-only health check
 (`python launch.py doctor`).
 
-The wizard takes a fresh machine from clone to a working, tested endpoint.
-Each step is idempotent and resumable; progress lives in ~/.ktl/config.json
-(see ktl_common). Only the Python standard library is used.
+The wizard configures a fresh machine: prerequisites, Kaggle credentials,
+Cloudflare login, the Worker relay, its secrets, and AI-client configs. It
+never starts a TPU session (boot the TPU explicitly with `python launch.py
+serve` when you actually want to use the endpoint). Each step is idempotent
+and resumable; progress lives in ~/.ktl/config.json (see ktl_common). Only
+the Python standard library is used.
 
 Design notes:
   - Subprocesses run through _run(), which honours --dry-run (prints, never
@@ -36,7 +39,7 @@ from ktl_common import Ctx, SubprocessError, confirm, say
 WORKER_DIR = ktl_common.HERE.parent / "worker"
 
 WIZARD_STEPS = ("prereqs", "kaggle", "cloudflare", "secrets",
-                "worker", "serve", "verify", "clients")
+                "worker", "clients")
 
 _WORKER_URL_RE = re.compile(r"https://[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.workers\.dev")
 
@@ -437,7 +440,7 @@ def _step_worker(ctx: Ctx, cfg: dict, args):
         say(f"adopting: {url} (deploy skipped)")
     else:
         print()
-        print("APPROVAL 1/4 — deploy the Cloudflare Worker relay")
+        print("deploy the Cloudflare Worker relay")
         print(f"  account     : {account}")
         print(f"  worker name : {name}")
         print(f"  code        : {WORKER_DIR}")
@@ -457,7 +460,7 @@ def _step_worker(ctx: Ctx, cfg: dict, args):
             sys.exit("no Worker URL found. Check the deploy output above, then "
                      "re-run (or use --adopt-worker URL).")
         print()
-        print("APPROVAL 2/4 — confirm the relay URL")
+        print("confirm the relay URL")
         print(f"  your permanent endpoint will be: {url}")
         if not confirm(ctx, "Save this URL as the relay endpoint?", default=True):
             sys.exit("URL confirmation cancelled — the Worker IS deployed; "
@@ -490,7 +493,7 @@ def _step_serve(ctx: Ctx, cfg: dict, args):
         return
 
     print()
-    print("APPROVAL 3/4 — start the TPU session")
+    print("start the TPU session (spends Kaggle TPU quota)")
     print(warn)
     if not confirm(ctx, "Start the TPU session now?", default=True):
         sys.exit("serve cancelled — Worker/relay state is saved; re-run: "
@@ -534,7 +537,7 @@ def _step_clients(ctx: Ctx, cfg: dict, args):
         return
     mc = ktl_common.MODELS[cfg.get("model", "qwen")]
     print()
-    print("APPROVAL 4/4 — configure your AI clients to use the relay")
+    print("configure your AI clients to use the relay")
     for b, c in detected:
         print(f"  found: {c:<11} ({b})")
     picked = ktl_common.choose(
@@ -548,7 +551,7 @@ def _step_clients(ctx: Ctx, cfg: dict, args):
         r = _resolved_for(cfg, client=client)
         if r is None:
             print(f"  {client}: no endpoint known yet — skipped "
-                  "(finish the serve step first)")
+                  "(finish the worker step first)")
             continue
         report = ktl_env.apply_write(r, ctx.dry_run, ctx)
         print(f"  {client}: {report}")
@@ -685,8 +688,9 @@ def cmd_setup(args) -> int:
                       f"(stored in {ktl_common.config_path()}; use it "
                       f"with the URL above)")
         print(f"  model      : {mk} ({ktl_common.MODELS[mk]['api_model']})")
-        print("  next       : python launch.py env --test     "
-              "(or: python launch.py doctor)")
+        print("  next       : python launch.py serve      "
+              "(boots the TPU when you want to use it,")
+        print("               then python launch.py env --test to verify)")
     else:
         print("setup stopped — see the error above. Re-run "
               "`python launch.py setup` to resume where it left off.")

@@ -1,10 +1,13 @@
 # Manual setup (without the wizard)
 
 `python launch.py setup` does everything on this page automatically. Use it
-unless you have a reason not to — it validates each step, stores the results
-in `~/.ktl/config.json`, and leaves you a passing compatibility matrix. This
-page is the fallback for: constrained environments, "I want to do it myself",
-or debugging a step the wizard flagged.
+unless you have a reason not to — it validates each step and stores the
+results in `~/.ktl/config.json`. It is **config-only**: it never starts a TPU
+session or spends quota. When it finishes, boot a TPU with
+`python launch.py serve`, then run `python launch.py env --test` for the
+compatibility matrix. This page is the fallback for: constrained
+environments, "I want to do it myself", or debugging a step the wizard
+flagged.
 
 Each section below maps to a wizard step, so you can run the parts you need
 and hand the rest back to `setup --only <step>`.
@@ -99,7 +102,10 @@ export KTL_RELAY_URL="https://<name>.<acct>.workers.dev"
 export KTL_RELAY_UPDATE_SECRET="<the UPDATE_SECRET you put above>"
 ```
 
-## 4. Start the session (step `serve`)
+## 4. Start the session (CLI `serve`; also `setup --only serve`)
+
+The config-only wizard stops here — TPU sessions are started explicitly, only
+when you want to spend quota
 
 ```bash
 python launch.py serve               # Qwen3.8-27B (default)
@@ -112,7 +118,7 @@ Without one, it falls back to a per-boot quick-tunnel URL (still fine for
 one-off use). Boot takes ~16–22 min; follow with
 `python launch.py status --follow`.
 
-## 5. Verify (step `verify`)
+## 5. Verify (CLI `env --test`; also `setup --only verify`)
 
 ```bash
 python launch.py env --test --wait 600
@@ -122,7 +128,7 @@ Runs the live compatibility matrix (models, chat non-stream/stream, Anthropic
 messages, Responses, tool probe, latency). Exit `0` = all critical routes
 pass. `doctor` runs the same matrix as part of its report.
 
-## 6. Point your clients at it (step `clients`)
+## 6. Point your clients at it (step `clients`; also `python launch.py env`)
 
 ```bash
 python launch.py env all                 # print config for every client
