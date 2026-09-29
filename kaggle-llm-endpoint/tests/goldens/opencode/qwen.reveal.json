@@ -1,0 +1,36 @@
+{
+  "kaggle-tpu": {
+    "npm": "@ai-sdk/openai-compatible",
+    "name": "Kaggle TPU Relay",
+    "options": {
+      "baseURL": "https://ex.workers.dev/v1",
+      "apiKey": "sk-test"
+    },
+    "models": {
+      "qwen3.8-27b": {
+        "name": "qwen3.8-27b",
+        "limit": {
+          "context": 262144,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.45,
+          "output": 3.2,
+          "cache_read": 0.05
+        },
+        "tool_call": true,
+        "reasoning": true,
+        "temperature": true,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        }
+      }
+    }
+  }
+}
