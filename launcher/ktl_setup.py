@@ -378,24 +378,11 @@ def _step_cloudflare(ctx: Ctx, cfg: dict, args):
         print("The browser login above did not complete — wrangler gave up.")
         print("The OAuth callback goes to the browser's OWN localhost:8976,")
         print("never back to this terminal, so a remote/headless login always")
-        print("times out like this.")
-        if not ctx.yes and confirm(
-                ctx, "Retry with the DEVICE login instead (works on any "
-                     "machine — writes nothing to disk)?"):
-            who = _device_login(ctx)
-            say(f"ok    : Cloudflare — logged in as {who}")
-            return
-        if ctx.yes:
-            who = _device_login(ctx)
-            say(f"ok    : Cloudflare — logged in as {who}")
-            return
-        print()
-        print("Otherwise, to make the plain login reach this terminal:")
-        print("  * run in a terminal ON the machine that has your browser:")
-        print("      ssh -L 8976:localhost:8976 <you>@<this-host>")
-        print("    (keep it open) then re-run this step.")
-        sys.exit("Cloudflare login did not complete. "
-                 "Re-run: python launch.py setup --only cloudflare")
+        print("times out like this. Falling back to the device login, which")
+        print("needs no callback server.")
+        who = _device_login(ctx)
+        say(f"ok    : Cloudflare — logged in as {who}")
+        return
     try:
         who = _parse_whoami(_whoami())
     except SubprocessError:

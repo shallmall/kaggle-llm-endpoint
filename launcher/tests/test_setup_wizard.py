@@ -315,38 +315,18 @@ class TestCloudflareTokenAuth(WizardBase):
             plain = "wrangler@4 login" in ln and "wrangler@4 login --device" not in ln
             self.assertFalse(plain, self.record_lines())
 
-    def test_plain_login_timeout_offers_device_fallback(self):
-        """Desktop browser login times out (OAuth callback can't return): the
-        wizard echoes wrangler's verbatim error, then switches to --device."""
+    def test_plain_login_timeout_falls_back_to_device_automatically(self):
+        """Even when no SSH session is detected, a timed-out browser login
+        falls back to the --device flow with no prompting."""
         self.patch_serve_and_matrix()
-        with self._desktop_env(FAKE_LOGIN_FAIL="1"), \
-             mock.patch("builtins.input", side_effect=["y"]):
+        with self._desktop_env(FAKE_LOGIN_FAIL="1"):
             rc, out = self.run_setup(only="cloudflare", yes=False)
         self.assertEqual(rc, 0, out)
         self.assertIn("Timed out waiting for authorization code", out)  # verbatim
-        self.assertIn("using the DEVICE login", out)                    # offer accepted
+        self.assertIn("Falling back to the device login", out)
+        self.assertIn("using the DEVICE login", out)
         self.assertIn("login --device", "|".join(self.record_lines()))
         self.assertIn("logged in as Fake Account", out)
-
-    def test_yes_auto_uses_device_when_plain_login_times_out(self):
-        self.patch_serve_and_matrix()
-        with self._desktop_env(FAKE_LOGIN_FAIL="1"):
-            rc, out = self.run_setup(only="cloudflare")
-        self.assertEqual(rc, 0, out)
-        self.assertIn("login --device", "|".join(self.record_lines()))
-        self.assertIn("logged in as Fake Account", out)
-
-    def test_plain_login_timeout_declined_exits_with_ssh_hint(self):
-        """The user declines the device flow: exit with the exact cause and
-        the ssh -L port-forward fix (run on the machine with the browser)."""
-        self.patch_serve_and_matrix()
-        with self._desktop_env(FAKE_LOGIN_FAIL="1"), \
-             mock.patch("builtins.input", side_effect=["n"]):
-            rc, out = self.run_setup(only="cloudflare", yes=False)
-        self.assertEqual(rc, 1)
-        self.assertIn("Timed out waiting for authorization code", out)
-        self.assertIn("ssh -L 8976:localhost:8976", out)
-        self.assertIn("Cloudflare login did not complete", out)
 
     def test_device_login_fails_with_clear_message(self):
         self.patch_serve_and_matrix()
