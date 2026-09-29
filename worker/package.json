@@ -1,0 +1,5 @@
+{
+  "name": "kaggle-tpu-relay-worker",
+  "private": true,
+  "type": "module"
+}
