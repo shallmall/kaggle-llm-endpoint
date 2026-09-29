@@ -5,9 +5,21 @@ endpoint that speaks the **OpenAI and Anthropic APIs**. Point Claude Code,
 Codex CLI, opencode or plain `curl` at it. No GPU, no cloud bill — about
 twenty minutes from pressing Run to a live URL.
 
-> **Based on** [ARahim3/kaggle-tpu-lab](https://github.com/ARahim3/kaggle-tpu-lab) —
-> extended here with multi-model support in the launcher (`--model qwen|glm`),
-> GLM engine packaging, and a Cloudflare Worker relay for permanent URLs.
+## What's in this fork
+
+Built on [ARahim3/kaggle-tpu-lab](https://github.com/ARahim3/kaggle-tpu-lab)
+(the original project handles a single model with a fresh URL per boot).
+Additions here:
+
+- **Multi-model launcher** — `python launch.py serve --model qwen|glm`;
+  supports both models with per-model flags.
+- **GLM-5.3-Flash packaging** — run-all notebook + kernel + a custom JAX
+  engine, auto-embedded at launch time.
+- **Permanent-URL relay** — the `worker/` Cloudflare Worker keeps one stable
+  endpoint across reboots, so agent settings never change.
+- **Qwen reliability patches** — spec-decode MTP rollback and an immutable
+  draft-row fix (async + MTP + structured-outputs crash) baked into the
+  served kernel.
 
 ## Models
 
@@ -64,6 +76,19 @@ python launch.py serve --model glm      # GLM-5.3-Flash (engine auto-embedded)
 `launch.py` pushes the kernel, watches progress live, and prints the endpoint
 URL + API key when it's ready. That's it.
 
+```mermaid
+sequenceDiagram
+    participant CLI as launch.py serve
+    participant K as Kaggle TPU session
+    participant C as curl / your agent
+
+    CLI->>K: push kernel + settings
+    K-->>CLI: progress events ("engine online")
+    K-->>CLI: endpoint URL + API key
+    C->>K: POST /v1/chat/completions (Bearer KEY)
+    K-->>C: streamed JSON response
+```
+
 ## Useful commands
 
 ```bash
@@ -72,6 +97,20 @@ python launch.py stop                   # terminate the TPU session
 
 python launch.py serve --model glm --reasoning-effort high --streams 8 --vision false
 python launch.py serve --model qwen --text-only --fast-start
+```
+
+## Project structure
+
+```
+kaggle-llm-endpoint/                # repo root
+├── kaggle-llm-endpoint/            # launcher + per-model recipes
+│   ├── launch.py                   #   multi-model launcher (entry point)
+│   ├── qwen38-27b/                 #   kernel, notebook, vllm patches, tools
+│   ├── glm53-flash/                #   kernel, notebook, JAX engine, tools
+│   └── tools/                      #   shared packaging helpers (pack_notebook.py, …)
+├── worker/                         # permanent-URL relay (Cloudflare Worker)
+├── README.md                       # this file
+└── LICENSE.md
 ```
 
 | Flag | Model | Effect |
@@ -120,6 +159,19 @@ ANTHROPIC_MODEL=glm-5.3-flash claude
 kernel attaches the public datasets, builds the engine on the 8 chips, opens
 the tunnel, and serves until `keepalive_min` elapses (~9 h max per Kaggle's
 cap). Boot again for a fresh session and URL.
+
+```mermaid
+flowchart LR
+    L["launch.py serve"] -->|"pushes kernel + settings"| K["Kaggle TPU kernel<br/>vLLM / JAX engine"]
+    K -->|"opens quick tunnel"| T["Cloudflare Tunnel<br/>(trycloudflare URL)"]
+    K -->|"POST /update-config<br/>Bearer UPDATE_SECRET"| W["Cloudflare Worker<br/>permanent URL"]
+    C["Claude Code / curl<br/>Bearer CLIENT_API_KEY"] -->|"/v1"| W
+    W -->|"forwards to current session"| T
+    T --> K
+```
+
+The worker stores the latest tunnel URL, so the permanent endpoint always
+points at the current boot.
 
 ## Troubleshooting (quick hits)
 
