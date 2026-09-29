@@ -146,12 +146,15 @@ python launch.py serve --model qwen --text-only --fast-start
 | `client_api_key` + `update_secret` (the two relay secrets) | Anything beyond the two relay secrets |
 | Per-step progress (`steps`) | |
 
-The `cloudflare` step uses the browser login (`wrangler login`). Its OAuth
-callback returns to `localhost:8976` on **this** terminal's machine, so on a
-VM/WSL you may need to forward it back to the machine with your browser:
-`ssh -L 8976:localhost:8976 <you>@<that-host>`. Alternatively run setup where
-your browser is (native Windows/macOS), or export `CLOUDFLARE_API_TOKEN`
-for a non-interactive login.
+The `cloudflare` step logs you in with the **device flow** when it detects a
+remote/SSH session (its own OAuth callback to `localhost:8976` can only work
+when the browser shares the machine). It prints
+`https://dash.cloudflare.com/oauth2/device` and a one-time code — open that in
+a browser on your own computer, enter the code, approve, and the terminal
+finishes automatically. On a normal desktop it simply opens the browser login
+page. If a plain login times out, the wizard re-runs with the device flow. A
+`CLOUDFLARE_API_TOKEN` env var is also accepted for fully non-interactive
+logins.
 
 Reset / rotate:
 ```bash

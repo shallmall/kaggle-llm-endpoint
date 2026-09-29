@@ -56,18 +56,31 @@ npx -y wrangler@4 login      # opens a browser; logs you into Cloudflare
 npx -y wrangler@4 deploy     # prints https://<name>.<acct>.workers.dev
 ```
 
-`wrangler login` uses an OAuth callback to `localhost:8976`, so it only works
-when your browser and this terminal are on the **same machine**. From a VM,
-WSL or container, forward the callback back to the machine with the browser:
+`wrangler login` normally uses an OAuth callback to `localhost:8976`, which
+only works when your browser and this terminal are on the **same machine**.
+From a VM, WSL or SSH session, use the **device flow** instead — the wizard
+picks it automatically when it detects a remote session:
 
 ```bash
-ssh -L 8976:localhost:8976 <you>@<machine-with-browser>
+npx -y wrangler@4 login --device
 ```
 
-…or run the step where your browser is (native Windows/macOS), or export a
-token for a non-interactive login:
-`export CLOUDFLARE_API_TOKEN=<token>` (Account > Workers Scripts at
-<https://dash.cloudflare.com/profile/api-tokens>).
+It prints `https://dash.cloudflare.com/oauth2/device` and a short one-time
+code (five minutes to approve): open the URL **in a browser on your own
+computer**, enter the code, click Approve, and the terminal finishes on its
+own — no port forwarding needed. A plain `wrangler login` from a remote
+machine with your browser elsewhere always times out, because the callback
+lands on the browser's own `localhost`, never back on the VM. If you do want
+the plain flow anyway, it can be made to reach this terminal with a forward
+run **on the machine that has your browser**:
+
+```bash
+ssh -L 8976:localhost:8976 <you>@<this-host>
+```
+
+(keep it open during the login). For a fully non-interactive login, export a
+token instead: `export CLOUDFLARE_API_TOKEN=<token>` (Account > Workers
+Scripts at <https://dash.cloudflare.com/profile/api-tokens>).
 
 Two secrets, **different random strings, ≥ 32 chars each** (e.g.
 `openssl rand -base64 32`). The wizard generates these for you; by hand:

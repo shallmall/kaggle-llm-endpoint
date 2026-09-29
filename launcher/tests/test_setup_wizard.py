@@ -99,6 +99,18 @@ case "$*" in
     printf '%s=%s\n' "$key" "$val" >> "${FAKE_STDIN_KEYS:?}"
     echo "Success! The environment variable $key has been updated."
     ;;
+  *"login --device"*)
+    echo "Attempting to login via OAuth Device Authorization Grant..."
+    echo "To authorize Wrangler, please visit:"
+    echo "  https://dash.cloudflare.com/oauth2/device"
+    echo "and enter the code: ABCDEF12"
+    if [ "${FAKE_DEVICE_FAIL:-0}" = "1" ]; then
+      echo "Error: Timed out waiting for device verification." >&2
+      exit 1
+    fi
+    touch "${FAKE_WHOAMI_FILE:?}"
+    echo "Successfully logged in."
+    ;;
   *login*)
     if [ "${FAKE_LOGIN_FAIL:-0}" = "1" ]; then
       echo "Timed out waiting for authorization code, please try again." >&2
@@ -148,6 +160,7 @@ esac
             "FAKE_KAGGLE_FAIL": "0",
             "FAKE_TOKEN_INVALID": "0",
             "FAKE_LOGIN_FAIL": "0",
+            "FAKE_DEVICE_FAIL": "0",
             "KTL_RELAY_URL": "",
             "KTL_CLIENT_API_KEY": "",
             "KTL_API_KEY": "",
@@ -234,9 +247,11 @@ class TestDryRun(WizardBase):
 
 
 class TestCloudflareTokenAuth(WizardBase):
-    """setup accepts a CLOUDFLARE_API_TOKEN env var (non-interactive), and
-    otherwise runs the plain 'click the link' browser login, explaining the
-    split-browser case when that callback never returns."""
+    """setup accepts a CLOUDFLARE_API_TOKEN env var (non-interactive); on a
+    desktop it runs the plain 'click the link' browser login; on an SSH/remote
+    session (or when that login times out) it switches to `wrangler login
+    --device`, which needs no localhost callback server and therefore works
+    from VMs."""
 
     def test_good_token_skips_browser_login(self):
         # no whoami_file.touch(): a CLOUDFLARE_API_TOKEN env var must work
@@ -262,27 +277,84 @@ class TestCloudflareTokenAuth(WizardBase):
         for ln in self.record_lines("npx|"):
             self.assertNotIn("login", ln)
 
-    def test_browser_login_is_used_when_no_token(self):
-        """No env token: the wizard goes straight to the browser login (the
-        simple 'click the link' flow), and succeeds once the callback lands."""
+    def _desktop_env(self, **extra):
+        """Simulate a normal desktop: no SSH session, but a graphical display,
+        so the wizard picks the plain browser-login flow."""
+        base = {"DISPLAY": ":0", "WAYLAND_DISPLAY": "",
+                "SSH_CONNECTION": "", "SSH_CLIENT": ""}
+        base.update(extra)
+        return mock.patch.dict(os.environ, base)
+
+    def test_browser_login_is_used_on_a_desktop(self):
+        """No env token and a graphical session: the wizard goes straight to
+        the plain browser login (the simple 'click the link' flow)."""
         self.patch_serve_and_matrix()
-        rc, out = self.run_setup(only="cloudflare")
+        with self._desktop_env():
+            rc, out = self.run_setup(only="cloudflare")
         self.assertEqual(rc, 0, out)
         self.assertIn("not logged in to Cloudflare — starting the browser login flow", out)
         self.assertIn("logged in as Fake Account", out)
         login = [ln for ln in self.record_lines() if "wrangler@4 login" in ln]
-        self.assertTrue(login, self.record_lines())
+        self.assertEqual(len(login), 1, self.record_lines())          # plain only
+        self.assertNotIn("login --device", "|".join(login))
 
-    def test_browser_login_timeout_prints_hint_and_exits(self):
-        """When the OAuth callback can't return (browser on another machine),
-        the wizard explains the cause and exits — it does NOT fall back to a
-        token that the user never asked for."""
+    def test_remote_ssh_uses_device_login(self):
+        """Over SSH there is no browser on this machine, so the wizard skips
+        the doomed `wrangler login` and uses the --device flow (RFC 8628)."""
         self.patch_serve_and_matrix()
-        with mock.patch.dict(os.environ, {"FAKE_LOGIN_FAIL": "1"}):
+        with mock.patch.dict(os.environ, {"SSH_CONNECTION": "1.2.3.4 5 6.7.8.9 22",
+                                          "DISPLAY": "",
+                                          "SSH_CLIENT": "1.2.3.4 5 22"}):
+            rc, out = self.run_setup(only="cloudflare")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("using the DEVICE login", out)
+        self.assertIn("https://dash.cloudflare.com/oauth2/device", out)
+        self.assertIn("logged in as Fake Account", out)
+        self.assertIn("login --device", "|".join(self.record_lines()))
+        for ln in self.record_lines():
+            plain = "wrangler@4 login" in ln and "wrangler@4 login --device" not in ln
+            self.assertFalse(plain, self.record_lines())
+
+    def test_plain_login_timeout_offers_device_fallback(self):
+        """Desktop browser login times out (OAuth callback can't return): the
+        wizard echoes wrangler's verbatim error, then switches to --device."""
+        self.patch_serve_and_matrix()
+        with self._desktop_env(FAKE_LOGIN_FAIL="1"), \
+             mock.patch("builtins.input", side_effect=["y"]):
+            rc, out = self.run_setup(only="cloudflare", yes=False)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Timed out waiting for authorization code", out)  # verbatim
+        self.assertIn("using the DEVICE login", out)                    # offer accepted
+        self.assertIn("login --device", "|".join(self.record_lines()))
+        self.assertIn("logged in as Fake Account", out)
+
+    def test_yes_auto_uses_device_when_plain_login_times_out(self):
+        self.patch_serve_and_matrix()
+        with self._desktop_env(FAKE_LOGIN_FAIL="1"):
+            rc, out = self.run_setup(only="cloudflare")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("login --device", "|".join(self.record_lines()))
+        self.assertIn("logged in as Fake Account", out)
+
+    def test_plain_login_timeout_declined_exits_with_ssh_hint(self):
+        """The user declines the device flow: exit with the exact cause and
+        the ssh -L port-forward fix (run on the machine with the browser)."""
+        self.patch_serve_and_matrix()
+        with self._desktop_env(FAKE_LOGIN_FAIL="1"), \
+             mock.patch("builtins.input", side_effect=["n"]):
+            rc, out = self.run_setup(only="cloudflare", yes=False)
+        self.assertEqual(rc, 1)
+        self.assertIn("Timed out waiting for authorization code", out)
+        self.assertIn("ssh -L 8976:localhost:8976", out)
+        self.assertIn("Cloudflare login did not complete", out)
+
+    def test_device_login_fails_with_clear_message(self):
+        self.patch_serve_and_matrix()
+        with mock.patch.dict(os.environ, {"SSH_CONNECTION": "1.2.3.4 5 6.7.8.9 22",
+                                          "FAKE_DEVICE_FAIL": "1"}):
             rc, out = self.run_setup(only="cloudflare")
         self.assertEqual(rc, 1)
-        self.assertIn("ssh -L 8976:localhost:8976", out)   # the split-browser hint
-        self.assertIn("Cloudflare login did not complete", out)
+        self.assertIn("device login did not complete", out)
 
 
 class TestHappyPath(WizardBase):

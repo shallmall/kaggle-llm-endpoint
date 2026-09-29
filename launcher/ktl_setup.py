@@ -297,6 +297,46 @@ def _step_kaggle(ctx: Ctx, cfg: dict, args):
     say(f"ok    : Kaggle authenticated as {user}")
 
 
+def _is_remote_session() -> bool:
+    """True when this terminal is reached over SSH or has no graphical display,
+    i.e. the browser cannot share a machine with wrangler's OAuth callback
+    server on localhost:8976. On such machines `wrangler login` always times
+    out, so the wizard uses the --device flow instead (no callback server)."""
+    if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"):
+        return True
+    if os.name == "posix" and not (
+            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return True
+    return False
+
+
+def _device_login(ctx: Ctx) -> str:
+    """OAuth 2.0 Device Authorization Grant (RFC 8628): wrangler prints a
+    verification URL and a one-time code, then polls until the user approves
+    it in a browser elsewhere. No localhost callback server, so it works from
+    SSH/VMs/containers. Returns the account name."""
+    say("using the DEVICE login — no callback server, works over SSH/VM")
+    print("1) open https://dash.cloudflare.com/oauth2/device in a browser")
+    print("   on the machine you normally use (your own computer).")
+    print("2) enter the code wrangler prints below and click Approve.")
+    print("   This terminal waits and finishes automatically.")
+    try:
+        _run(ctx, ktl_common.wrangler_cmd("login", "--device"),
+             inherit_stdio=True, timeout=600)
+    except SubprocessError:
+        sys.exit("The device login did not complete (see the error above). "
+                 "Open the URL, enter the code and click Approve, then "
+                 "re-run: python launch.py setup --only cloudflare")
+    try:
+        who = _parse_whoami(_whoami())
+    except SubprocessError:
+        who = ""
+    if not who:
+        sys.exit("The device login did not complete. Re-run: "
+                 "python launch.py setup --only cloudflare")
+    return who
+
+
 def _step_cloudflare(ctx: Ctx, cfg: dict, args):
     if ctx.dry_run:
         ctx.log("[dry-run] would run: wrangler whoami (and `wrangler login` if needed)")
@@ -317,6 +357,13 @@ def _step_cloudflare(ctx: Ctx, cfg: dict, args):
                  "return an account. Check the token (dash.cloudflare.com/"
                  "profile/api-tokens) and re-run: "
                  "python launch.py setup --only cloudflare")
+
+    if _is_remote_session():
+        who = _device_login(ctx)
+        say(f"ok    : Cloudflare — logged in as {who}")
+        return
+
+    # browser on the same machine: the plain "click the link" flow
     say("not logged in to Cloudflare — starting the browser login flow...")
     print("A browser window will open; complete the login there — this step "
           "continues automatically once the callback returns.")
@@ -324,16 +371,29 @@ def _step_cloudflare(ctx: Ctx, cfg: dict, args):
     print("Note: the login callback returns to localhost:8976 on THIS terminal's")
     print("machine, so the browser and this terminal must be on the SAME machine.")
     try:
-        _run(ctx, ktl_common.wrangler_cmd("login"), inherit_stdio=True, timeout=600)
+        # capture mode: wrangler's own error is echoed verbatim on failure
+        _run(ctx, ktl_common.wrangler_cmd("login"), timeout=600)
     except SubprocessError:
         print()
-        print("The browser login did not complete. On a remote/headless machine")
-        print("this is expected — the OAuth callback to localhost:8976 can never")
-        print("reach the terminal. Fixes:")
-        print("  * port-forward from the machine with the browser:")
+        print("The browser login above did not complete — wrangler gave up.")
+        print("The OAuth callback goes to the browser's OWN localhost:8976,")
+        print("never back to this terminal, so a remote/headless login always")
+        print("times out like this.")
+        if not ctx.yes and confirm(
+                ctx, "Retry with the DEVICE login instead (works on any "
+                     "machine — writes nothing to disk)?"):
+            who = _device_login(ctx)
+            say(f"ok    : Cloudflare — logged in as {who}")
+            return
+        if ctx.yes:
+            who = _device_login(ctx)
+            say(f"ok    : Cloudflare — logged in as {who}")
+            return
+        print()
+        print("Otherwise, to make the plain login reach this terminal:")
+        print("  * run in a terminal ON the machine that has your browser:")
         print("      ssh -L 8976:localhost:8976 <you>@<this-host>")
-        print("    then re-run this step.")
-        print("  * or run setup where your browser is (native Windows/macOS).")
+        print("    (keep it open) then re-run this step.")
         sys.exit("Cloudflare login did not complete. "
                  "Re-run: python launch.py setup --only cloudflare")
     try:
