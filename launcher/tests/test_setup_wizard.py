@@ -140,6 +140,8 @@ esac
             "KTL_RELAY_URL": "",
             "KTL_CLIENT_API_KEY": "",
             "KTL_API_KEY": "",
+            "CLOUDFLARE_API_TOKEN": "",
+            "CLOUDFLARE_ACCOUNT_ID": "",
         }
         self._p = mock.patch.dict(os.environ, env)
         self._p.start()
@@ -218,6 +220,34 @@ class TestDryRun(WizardBase):
         self.assertEqual(rc, 0)
         self.assertEqual(
             load_config(migrate=False)["secrets"]["client_api_key"], "x" * 43)
+
+
+class TestCloudflareTokenAuth(WizardBase):
+    """setup must accept wrangler's non-interactive auth (API token), which is
+    the only reliable path on remote/headless machines where the OAuth
+    callback to localhost:8976 can never return."""
+
+    def test_good_token_skips_browser_login(self):
+        self.whoami_file.touch()
+        self.patch_serve_and_matrix()
+        with mock.patch.dict(os.environ,
+                             {"CLOUDFLARE_API_TOKEN": "tok_123",
+                              "CLOUDFLARE_ACCOUNT_ID": "acct_1"}):
+            rc, out = self.run_setup()
+        self.assertEqual(rc, 0, out)
+        for ln in self.record_lines("npx|"):
+            self.assertNotIn("login", ln)
+
+    def test_bad_token_fails_with_clear_message(self):
+        self.patch_serve_and_matrix()
+        with mock.patch.dict(os.environ,
+                             {"CLOUDFLARE_API_TOKEN": "tok_123",
+                              "CLOUDFLARE_ACCOUNT_ID": "acct_1"}):
+            rc, out = self.run_setup()
+        self.assertEqual(rc, 1)
+        self.assertIn("CLOUDFLARE_API_TOKEN is set", out)
+        for ln in self.record_lines("npx|"):
+            self.assertNotIn("login", ln)
 
 
 class TestHappyPath(WizardBase):

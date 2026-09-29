@@ -302,22 +302,40 @@ def _step_cloudflare(ctx: Ctx, cfg: dict, args):
         ctx.log("[dry-run] would run: wrangler whoami (and `wrangler login` if needed)")
         say("ok    : Cloudflare (dry run — login check skipped)")
         return
+    have_token = bool(os.environ.get("CLOUDFLARE_API_TOKEN", "").strip())
+    try:
+        who = _parse_whoami(_whoami())
+    except SubprocessError:
+        who = ""
+    if who:
+        say(f"ok    : Cloudflare — logged in as {who}")
+        return
+    if have_token:
+        sys.exit("CLOUDFLARE_API_TOKEN is set, but `wrangler whoami` did not return "
+                 "an account. Check the token (dash.cloudflare.com/profile/api-tokens) "
+                 "and re-run: python launch.py setup --only cloudflare")
+    say("not logged in to Cloudflare — starting the browser login flow...")
+    print("A browser window will open. Complete the login there; this step "
+          "continues automatically.")
+    print("(On a remote/headless machine the OAuth callback to localhost:8976 can "
+          "never return, which is why login times out. Use an API token instead, "
+          "as described if this step fails.)")
+    try:
+        _run(ctx, ktl_common.wrangler_cmd("login"), inherit_stdio=True, timeout=600)
+    except SubprocessError:
+        sys.exit("Cloudflare login timed out before the browser callback arrived. "
+                 "On a remote/headless machine, use an API token instead:\n"
+                 "  export CLOUDFLARE_API_TOKEN=<token> CLOUDFLARE_ACCOUNT_ID=<account id>\n"
+                 "  python launch.py setup --only cloudflare\n"
+                 "(create the token at dash.cloudflare.com/profile/api-tokens with "
+                 "Account > Workers Scripts edit rights)")
     try:
         who = _parse_whoami(_whoami())
     except SubprocessError:
         who = ""
     if not who:
-        say("not logged in to Cloudflare — starting the browser login flow...")
-        print("A browser window will open. Complete the login there; this step "
-              "continues automatically.")
-        _run(ctx, ktl_common.wrangler_cmd("login"), inherit_stdio=True, timeout=600)
-        try:
-            who = _parse_whoami(_whoami())
-        except SubprocessError:
-            who = ""
-        if not who:
-            sys.exit("Cloudflare login did not complete. "
-                     "Re-run: python launch.py setup --only cloudflare")
+        sys.exit("Cloudflare login did not complete. "
+                 "Re-run: python launch.py setup --only cloudflare")
     say(f"ok    : Cloudflare — logged in as {who}")
 
 
@@ -726,8 +744,9 @@ def cmd_doctor(args) -> int:
                 line("OK", f"Cloudflare login: {who}")
             else:
                 line("MISSING", "Cloudflare: not logged in",
-                     "Run `npx -y wrangler@4 login` (browser) — or: "
-                     "python launch.py setup --only cloudflare")
+                     "Run `npx -y wrangler@4 login` (browser) — or export "
+                     "CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID (remote/headless) "
+                     "— or: python launch.py setup --only cloudflare")
         except SubprocessError:
             line("FAIL", "Cloudflare login check failed",
                  "Check network / Node install — or: "
