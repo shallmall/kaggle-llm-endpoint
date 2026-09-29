@@ -178,6 +178,67 @@ def save_config(cfg: dict) -> None:
     _atomic_write(config_path(), json.dumps(cfg, indent=2) + "\n")
 
 
+# ---------------------------------------------------------------------------
+# Cloudflare credential file (~/.ktl/cloudflare.env) — the saved-API-token
+# option offered by the setup wizard for machines without a browser (VMs,
+# WSL, containers). A live infra credential, stored 0600 like config.json;
+# parallel to ~/.kaggle/kaggle.json. Never goes into config.json.
+# ---------------------------------------------------------------------------
+def cloudflare_env_path() -> Path:
+    return ktl_home() / "cloudflare.env"
+
+
+def load_cloudflare_env() -> dict:
+    """Read the saved Cloudflare credentials -> {token, account_id}. A missing
+    or token-less file returns {} (an account id alone is not enough)."""
+    out: dict = {}
+    p = cloudflare_env_path()
+    if not p.exists():
+        return out
+    try:
+        for line in p.read_text().splitlines():
+            key, _, val = line.partition("=")
+            key = key.strip().upper()
+            val = val.strip()
+            if key == "CLOUDFLARE_API_TOKEN" and val:
+                out["token"] = val
+            elif key == "CLOUDFLARE_ACCOUNT_ID" and val:
+                out["account_id"] = val
+    except OSError:
+        return {}
+    if "token" in out:
+        return out
+    return {}
+
+
+def save_cloudflare_env(env: dict) -> Path:
+    """Persist the Cloudflare API token (+ optional account id) to a 0600
+    file under ~/.ktl. Raises ValueError when no token is given."""
+    token = (env.get("token") or "").strip()
+    if not token:
+        raise ValueError("cannot save an empty Cloudflare API token")
+    account = (env.get("account_id") or "").strip()
+    lines = [f"CLOUDFLARE_API_TOKEN={token}"]
+    if account:
+        lines.append(f"CLOUDFLARE_ACCOUNT_ID={account}")
+    _atomic_write(cloudflare_env_path(), "\n".join(lines) + "\n")
+    return cloudflare_env_path()
+
+
+def apply_cloudflare_env(env: dict) -> bool:
+    """Put saved Cloudflare credentials into os.environ so every wrangler
+    subprocess inherits them. A real, non-empty env var wins; an explicitly
+    empty one is treated as unset (same as not exporting it at all). Returns
+    True when an API token is active in the environment afterwards."""
+    token = (env.get("token") or "").strip()
+    if token and not os.environ.get("CLOUDFLARE_API_TOKEN", "").strip():
+        os.environ["CLOUDFLARE_API_TOKEN"] = token
+    account = (env.get("account_id") or "").strip()
+    if account and not os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip():
+        os.environ["CLOUDFLARE_ACCOUNT_ID"] = account
+    return bool(os.environ.get("CLOUDFLARE_API_TOKEN", "").strip())
+
+
 def update_config(**partial) -> dict:
     """Load, apply top-level key updates, save, return the new config."""
     cfg = load_config(migrate=False)

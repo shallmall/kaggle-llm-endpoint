@@ -72,6 +72,11 @@ class WizardBase(unittest.TestCase):
 printf 'npx|%s\n' "$*" >> "${FAKE_RECORD:?}"
 case "$*" in
   *whoami*)
+    if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ "${FAKE_TOKEN_INVALID:-0}" != "1" ]; then
+      echo "Account Name: Token Account"
+      echo "Logged in as: token@example.com"
+      exit 0
+    fi
     if [ ! -e "${FAKE_WHOAMI_FILE:?}" ]; then
       echo "You are not logged in. Run 'wrangler login' to log in." >&2
       exit 1
@@ -95,6 +100,10 @@ case "$*" in
     echo "Success! The environment variable $key has been updated."
     ;;
   *login*)
+    if [ "${FAKE_LOGIN_FAIL:-0}" = "1" ]; then
+      echo "Timed out waiting for authorization code, please try again." >&2
+      exit 1
+    fi
     touch "${FAKE_WHOAMI_FILE:?}"
     echo "Logged in to Fake Account."
     ;;
@@ -137,6 +146,8 @@ esac
             "FAKE_STDIN_KEYS": str(self.stdin_keys),
             "FAKE_WHOAMI_FILE": str(self.whoami_file),
             "FAKE_KAGGLE_FAIL": "0",
+            "FAKE_TOKEN_INVALID": "0",
+            "FAKE_LOGIN_FAIL": "0",
             "KTL_RELAY_URL": "",
             "KTL_CLIENT_API_KEY": "",
             "KTL_API_KEY": "",
@@ -228,7 +239,7 @@ class TestCloudflareTokenAuth(WizardBase):
     callback to localhost:8976 can never return."""
 
     def test_good_token_skips_browser_login(self):
-        self.whoami_file.touch()
+        # no whoami_file.touch(): token auth must work WITHOUT any OAuth login
         self.patch_serve_and_matrix()
         with mock.patch.dict(os.environ,
                              {"CLOUDFLARE_API_TOKEN": "tok_123",
@@ -242,12 +253,69 @@ class TestCloudflareTokenAuth(WizardBase):
         self.patch_serve_and_matrix()
         with mock.patch.dict(os.environ,
                              {"CLOUDFLARE_API_TOKEN": "tok_123",
-                              "CLOUDFLARE_ACCOUNT_ID": "acct_1"}):
+                              "CLOUDFLARE_ACCOUNT_ID": "acct_1",
+                              "FAKE_TOKEN_INVALID": "1"}):
             rc, out = self.run_setup()
         self.assertEqual(rc, 1)
         self.assertIn("CLOUDFLARE_API_TOKEN is set", out)
         for ln in self.record_lines("npx|"):
             self.assertNotIn("login", ln)
+
+    def test_wizard_pastes_token_validates_and_saves(self):
+        """No env token, no OAuth login: the wizard chooses 'B', pastes a
+        token, validates it, and (default yes) saves it to cloudflare.env."""
+        self.patch_serve_and_matrix()
+        with mock.patch("builtins.input", side_effect=["b", "", "y"]), \
+             mock.patch.object(ktl_setup, "_input_secret",
+                               return_value="tok_wiz"):
+            rc, out = self.run_setup(only="cloudflare", yes=False)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("logged in as Token Account", out)
+        self.assertIn("saved token", out)
+        self.assertNotIn("tok_wiz", out)          # never echoed
+        saved = ktl_common.load_cloudflare_env()
+        self.assertEqual(saved.get("token"), "tok_wiz")
+        for ln in self.record_lines("npx|"):
+            self.assertNotIn("login", ln)         # no browser flow was attempted
+
+    def test_saved_token_file_is_used_without_prompts(self):
+        ktl_common.save_cloudflare_env({"token": "tok_saved"})
+        self.patch_serve_and_matrix()
+        rc, out = self.run_setup(only="cloudflare")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("saved token", out)
+        for ln in self.record_lines("npx|"):
+            self.assertNotIn("login", ln)
+
+    def test_wizard_falls_back_to_token_when_browser_login_times_out(self):
+        """The interactive path: browser login fails (OAuth callback can't
+        return on a remote box) -> the wizard prints the cause and offers the
+        token path right there instead of giving up."""
+        self.patch_serve_and_matrix()
+        with mock.patch.dict(os.environ, {"FAKE_LOGIN_FAIL": "1"}), \
+             mock.patch("builtins.input", side_effect=["a", "", "y"]), \
+             mock.patch.object(ktl_setup, "_input_secret",
+                               return_value="tok_fallback"):
+            rc, out = self.run_setup(only="cloudflare", yes=False)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ssh -L 8976:localhost:8976", out)   # the split-browser hint
+        self.assertIn("logged in as Token Account", out)
+        self.assertNotIn("tok_fallback", out)
+
+    def test_wizard_token_secret_never_in_log(self):
+        self.patch_serve_and_matrix()
+        with mock.patch("builtins.input", side_effect=["b", "", "y"]), \
+             mock.patch.object(ktl_setup, "_input_secret",
+                               return_value="tok_secret_x"):
+            rc, _ = self.run_setup(only="cloudflare", yes=False)
+        self.assertEqual(rc, 0)
+        self.assertNotIn(
+            "tok_secret_x",
+            (self.ktl_home / "config.json").read_text())
+        log = self.ktl_home / "setup.log"
+        self.assertNotIn(
+            "tok_secret_x",
+            log.read_text() if log.exists() else "")
 
 
 class TestHappyPath(WizardBase):
