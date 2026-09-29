@@ -52,14 +52,13 @@ Without a relay you get a fresh random `trycloudflare.com` URL per boot
 
 ```bash
 cd worker
-npx -y wrangler@4 login      # opens a browser; logs you into Cloudflare
+npx -y wrangler@4 login --device   # OAuth device flow: approve in any browser
 npx -y wrangler@4 deploy     # prints https://<name>.<acct>.workers.dev
 ```
 
-`wrangler login` normally uses an OAuth callback to `localhost:8976`, which
-only works when your browser and this terminal are on the **same machine**.
-From a VM, WSL or SSH session, use the **device flow** instead — the wizard
-picks it automatically when it detects a remote session:
+`wrangler login --device` is the OAuth 2.0 device flow: it never binds a
+`localhost` callback, so it works on any machine — desktop, VM, WSL or an SSH
+session. The wizard uses it for every login (no detection involved):
 
 ```bash
 npx -y wrangler@4 login --device
@@ -68,11 +67,11 @@ npx -y wrangler@4 login --device
 It prints `https://dash.cloudflare.com/oauth2/device` and a short one-time
 code (five minutes to approve): open the URL **in a browser on your own
 computer**, enter the code, click Approve, and the terminal finishes on its
-own — no port forwarding needed. A plain `wrangler login` from a remote
-machine with your browser elsewhere always times out, because the callback
-lands on the browser's own `localhost`, never back on the VM. If you do want
-the plain flow anyway, it can be made to reach this terminal with a forward
-run **on the machine that has your browser**:
+own — no port forwarding needed. (A plain `wrangler login` instead relies on a
+callback that lands on the browser's own `localhost`, never back on a remote
+terminal, so it only works browser-and-terminal on the same machine; it can be
+made to reach a remote terminal with a forward run **on the machine that has
+your browser**:)
 
 ```bash
 ssh -L 8976:localhost:8976 <you>@<this-host>

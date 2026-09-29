@@ -72,6 +72,14 @@ class WizardBase(unittest.TestCase):
 printf 'npx|%s\n' "$*" >> "${FAKE_RECORD:?}"
 case "$*" in
   *whoami*)
+    if [ "${FAKE_WHOAMI_TABLE:-0}" = "1" ]; then
+      echo "┌────────────────────────────────────┬──────────────────────────────────┐"
+      echo "│ Account Name                       │ Account ID                       │"
+      echo "├────────────────────────────────────┼──────────────────────────────────┤"
+      echo "│ Fake Account                       │ 1234567890abcdef1234567890abcdef │"
+      echo "└────────────────────────────────────┴──────────────────────────────────┘"
+      exit 0
+    fi
     if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ "${FAKE_TOKEN_INVALID:-0}" != "1" ]; then
       echo "Account Name: Token Account"
       echo "Logged in as: token@example.com"
@@ -161,6 +169,7 @@ esac
             "FAKE_TOKEN_INVALID": "0",
             "FAKE_LOGIN_FAIL": "0",
             "FAKE_DEVICE_FAIL": "0",
+            "FAKE_WHOAMI_TABLE": "0",
             "KTL_RELAY_URL": "",
             "KTL_CLIENT_API_KEY": "",
             "KTL_API_KEY": "",
@@ -247,11 +256,11 @@ class TestDryRun(WizardBase):
 
 
 class TestCloudflareTokenAuth(WizardBase):
-    """setup accepts a CLOUDFLARE_API_TOKEN env var (non-interactive); on a
-    desktop it runs the plain 'click the link' browser login; on an SSH/remote
-    session (or when that login times out) it switches to `wrangler login
-    --device`, which needs no localhost callback server and therefore works
-    from VMs."""
+    """setup accepts a CLOUDFLARE_API_TOKEN env var (non-interactive); the only
+    interactive login is `wrangler login --device` — the OAuth 2.0 device flow
+    (RFC 8628) that needs no localhost callback server, so it works identically
+    on a desktop, over SSH, or on any headless/VM machine. No SSH detection,
+    no plain-flow branch."""
 
     def test_good_token_skips_browser_login(self):
         # no whoami_file.touch(): a CLOUDFLARE_API_TOKEN env var must work
@@ -277,64 +286,66 @@ class TestCloudflareTokenAuth(WizardBase):
         for ln in self.record_lines("npx|"):
             self.assertNotIn("login", ln)
 
-    def _desktop_env(self, **extra):
-        """Simulate a normal desktop: no SSH session, but a graphical display,
-        so the wizard picks the plain browser-login flow."""
-        base = {"DISPLAY": ":0", "WAYLAND_DISPLAY": "",
-                "SSH_CONNECTION": "", "SSH_CLIENT": ""}
-        base.update(extra)
-        return mock.patch.dict(os.environ, base)
-
-    def test_browser_login_is_used_on_a_desktop(self):
-        """No env token and a graphical session: the wizard goes straight to
-        the plain browser login (the simple 'click the link' flow)."""
+    def test_device_login_is_used_everywhere(self):
+        """Even on a plain desktop with a display and no SSH, the wizard logs
+        in with `wrangler login --device` — no detection, no plain login."""
         self.patch_serve_and_matrix()
-        with self._desktop_env():
+        with mock.patch.dict(os.environ,
+                             {"DISPLAY": ":0", "WAYLAND_DISPLAY": ":0",
+                              "SSH_CONNECTION": "", "SSH_CLIENT": ""}):
             rc, out = self.run_setup(only="cloudflare")
         self.assertEqual(rc, 0, out)
-        self.assertIn("not logged in to Cloudflare — starting the browser login flow", out)
-        self.assertIn("logged in as Fake Account", out)
-        login = [ln for ln in self.record_lines() if "wrangler@4 login" in ln]
-        self.assertEqual(len(login), 1, self.record_lines())          # plain only
-        self.assertNotIn("login --device", "|".join(login))
-
-    def test_remote_ssh_uses_device_login(self):
-        """Over SSH there is no browser on this machine, so the wizard skips
-        the doomed `wrangler login` and uses the --device flow (RFC 8628)."""
-        self.patch_serve_and_matrix()
-        with mock.patch.dict(os.environ, {"SSH_CONNECTION": "1.2.3.4 5 6.7.8.9 22",
-                                          "DISPLAY": "",
-                                          "SSH_CLIENT": "1.2.3.4 5 22"}):
-            rc, out = self.run_setup(only="cloudflare")
-        self.assertEqual(rc, 0, out)
-        self.assertIn("using the DEVICE login", out)
+        self.assertIn("using the DEVICE login (OAuth 2.0 device flow)", out)
         self.assertIn("https://dash.cloudflare.com/oauth2/device", out)
         self.assertIn("logged in as Fake Account", out)
-        self.assertIn("login --device", "|".join(self.record_lines()))
-        for ln in self.record_lines():
-            plain = "wrangler@4 login" in ln and "wrangler@4 login --device" not in ln
-            self.assertFalse(plain, self.record_lines())
-
-    def test_plain_login_timeout_falls_back_to_device_automatically(self):
-        """Even when no SSH session is detected, a timed-out browser login
-        falls back to the --device flow with no prompting."""
-        self.patch_serve_and_matrix()
-        with self._desktop_env(FAKE_LOGIN_FAIL="1"):
-            rc, out = self.run_setup(only="cloudflare", yes=False)
-        self.assertEqual(rc, 0, out)
-        self.assertIn("Timed out waiting for authorization code", out)  # verbatim
-        self.assertIn("Falling back to the device login", out)
-        self.assertIn("using the DEVICE login", out)
-        self.assertIn("login --device", "|".join(self.record_lines()))
-        self.assertIn("logged in as Fake Account", out)
+        lines = "|".join(self.record_lines())
+        self.assertIn("login --device", lines)
+        plain = [ln for ln in self.record_lines()
+                 if "wrangler@4 login" in ln and "wrangler@4 login --device" not in ln]
+        self.assertEqual(plain, [], lines)
 
     def test_device_login_fails_with_clear_message(self):
         self.patch_serve_and_matrix()
-        with mock.patch.dict(os.environ, {"SSH_CONNECTION": "1.2.3.4 5 6.7.8.9 22",
-                                          "FAKE_DEVICE_FAIL": "1"}):
+        with mock.patch.dict(os.environ, {"FAKE_DEVICE_FAIL": "1"}):
             rc, out = self.run_setup(only="cloudflare")
         self.assertEqual(rc, 1)
         self.assertIn("device login did not complete", out)
+
+    def test_whoami_table_format_is_recognized(self):
+        """wrangler 4.x prints the account as a box-drawing table (not the old
+        `Account Name:` line), even to a pipe: an already-logged-in account
+        must be detected from that output without any login."""
+        self.patch_serve_and_matrix()
+        with mock.patch.dict(os.environ, {"FAKE_WHOAMI_TABLE": "1"}):
+            rc, out = self.run_setup(only="cloudflare")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("logged in as Fake Account", out)
+        for ln in self.record_lines("npx|"):
+            self.assertNotIn("login", ln)
+
+
+class TestParseWhoami(unittest.TestCase):
+    def test_plain_line(self):
+        self.assertEqual(
+            ktl_setup._parse_whoami("Account Name: Fake Account\n"
+                                    "Logged in as: fake@example.com"),
+            "Fake Account")
+
+    def test_table_format(self):
+        out = ("┌──────────────────┬──────────────────────────────────┐\n"
+               "│ Account Name     │ Account ID                       │\n"
+               "├──────────────────┼──────────────────────────────────┤\n"
+               "│ Example Account  │ 1234567890abcdef1234567890abcdef │\n"
+               "└──────────────────┴──────────────────────────────────┘\n")
+        self.assertEqual(
+            ktl_setup._parse_whoami(out),
+            "Example Account")
+
+    def test_logged_in_as_fallback(self):
+        self.assertEqual(
+            ktl_setup._parse_whoami("Logged in as: someone@example.com"),
+            "someone@example.com")
+        self.assertEqual(ktl_setup._parse_whoami("not logged in"), "")
 
 
 class TestHappyPath(WizardBase):

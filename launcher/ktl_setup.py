@@ -100,10 +100,19 @@ def _whoami(quiet: bool = False) -> str:
 
 
 def _parse_whoami(out: str) -> str:
-    m = re.search(r"Account Name:\s*(.+)", out)
-    if m:
-        return m.group(1).strip()
-    m = re.search(r"[Ll]ogged in as\s*(\S+)", out)
+    """Extract the account name from `wrangler whoami`. Handles both the plain
+    `Account Name: <name>` line (piped / older wrangler) and the box-drawing
+    table wrangler 4.x prints (the first data row after the header)."""
+    for line in out.splitlines():
+        m = re.search(r"Account Name:\s*(.*?)\s*$", line)
+        if m:
+            return m.group(1).strip()
+    cells = re.findall(r"^\s*│\s*(.*?)\s*│\s*(.*?)\s*│\s*$", out, re.MULTILINE)
+    for name, _acct in cells:
+        nm = name.strip()
+        if nm not in ("Account Name", "Account ID"):
+            return nm
+    m = re.search(r"[Ll]ogged in as:?\s*(\S+)", out)
     return m.group(1).strip() if m else ""
 
 
@@ -297,25 +306,13 @@ def _step_kaggle(ctx: Ctx, cfg: dict, args):
     say(f"ok    : Kaggle authenticated as {user}")
 
 
-def _is_remote_session() -> bool:
-    """True when this terminal is reached over SSH or has no graphical display,
-    i.e. the browser cannot share a machine with wrangler's OAuth callback
-    server on localhost:8976. On such machines `wrangler login` always times
-    out, so the wizard uses the --device flow instead (no callback server)."""
-    if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"):
-        return True
-    if os.name == "posix" and not (
-            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-        return True
-    return False
-
-
 def _device_login(ctx: Ctx) -> str:
-    """OAuth 2.0 Device Authorization Grant (RFC 8628): wrangler prints a
-    verification URL and a one-time code, then polls until the user approves
-    it in a browser elsewhere. No localhost callback server, so it works from
-    SSH/VMs/containers. Returns the account name."""
-    say("using the DEVICE login — no callback server, works over SSH/VM")
+    """OAuth 2.0 Device Authorization Grant (RFC 8628). This is the ONLY login
+    the wizard uses: wrangler prints a verification URL and a one-time code,
+    then polls until it is approved in a browser — on any machine, over SSH,
+    headless, or on a desktop. No localhost callback server, nothing else can
+    time out. Returns the account name."""
+    say("using the DEVICE login (OAuth 2.0 device flow) — approve it in any browser")
     print("1) open https://dash.cloudflare.com/oauth2/device in a browser")
     print("   on the machine you normally use (your own computer).")
     print("2) enter the code wrangler prints below and click Approve.")
@@ -358,38 +355,7 @@ def _step_cloudflare(ctx: Ctx, cfg: dict, args):
                  "profile/api-tokens) and re-run: "
                  "python launch.py setup --only cloudflare")
 
-    if _is_remote_session():
-        who = _device_login(ctx)
-        say(f"ok    : Cloudflare — logged in as {who}")
-        return
-
-    # browser on the same machine: the plain "click the link" flow
-    say("not logged in to Cloudflare — starting the browser login flow...")
-    print("A browser window will open; complete the login there — this step "
-          "continues automatically once the callback returns.")
-    print()
-    print("Note: the login callback returns to localhost:8976 on THIS terminal's")
-    print("machine, so the browser and this terminal must be on the SAME machine.")
-    try:
-        # capture mode: wrangler's own error is echoed verbatim on failure
-        _run(ctx, ktl_common.wrangler_cmd("login"), timeout=600)
-    except SubprocessError:
-        print()
-        print("The browser login above did not complete — wrangler gave up.")
-        print("The OAuth callback goes to the browser's OWN localhost:8976,")
-        print("never back to this terminal, so a remote/headless login always")
-        print("times out like this. Falling back to the device login, which")
-        print("needs no callback server.")
-        who = _device_login(ctx)
-        say(f"ok    : Cloudflare — logged in as {who}")
-        return
-    try:
-        who = _parse_whoami(_whoami())
-    except SubprocessError:
-        who = ""
-    if not who:
-        sys.exit("Cloudflare login did not complete. "
-                 "Re-run: python launch.py setup --only cloudflare")
+    who = _device_login(ctx)
     say(f"ok    : Cloudflare — logged in as {who}")
 
 

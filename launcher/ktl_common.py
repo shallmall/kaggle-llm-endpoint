@@ -257,10 +257,10 @@ def hint_for_output(out: str) -> str:
         ("not logged in", "Not logged in to Cloudflare — run: python launch.py setup --only cloudflare"),
         ("login required", "Not logged in to Cloudflare — run: python launch.py setup --only cloudflare"),
         ("waiting for authorization code",
-         "Cloudflare login timed out (the OAuth callback to localhost:8976 can "
-         "never return on a remote/SSH/headless machine). Re-run "
-         "python launch.py setup --only cloudflare and use the DEVICE login it "
-         "offers; or export CLOUDFLARE_API_TOKEN=… (dash.cloudflare.com/profile/api-tokens)"),
+         "Cloudflare login stalled — re-run python launch.py setup --only "
+         "cloudflare (the DEVICE login works on any machine: open the URL, "
+         "enter the code, approve); or export CLOUDFLARE_API_TOKEN=… "
+         "(dash.cloudflare.com/profile/api-tokens)"),
         ("unauthorized", "Authentication failed — check your keys (relay: python launch.py setup --rotate)"),
         ("401", "Authentication failed (401) — check keys (relay: python launch.py setup --rotate)"),
         ("403", "Forbidden (403) — this account has no access to that Worker"),
