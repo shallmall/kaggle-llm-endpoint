@@ -6,7 +6,7 @@
 #   verify_local.sh --full   + the engine unit test suite (slow on a laptop)
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LAB="$(cd "$HERE/../.." && pwd)"     # kaggle-llm-endpoint/
+LAB="$(cd "$HERE/../.." && pwd)"     # launcher/
 ROOT="$(cd "$LAB/.." && pwd)"        # repo root
 PY="$ROOT/.venv/bin/python"
 [ -x "$PY" ] || PY="$(command -v python3)"

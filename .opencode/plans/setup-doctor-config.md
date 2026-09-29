@@ -221,7 +221,7 @@ Existing 72 ktl_env tests must stay green (import shims + behavior preservation)
 
 ## Docs
 
-- README: Quick start → `clone → cd kaggle-llm-endpoint → python launch.py setup` (fresh machine
+- README: Quick start → `clone → cd launcher → python launch.py setup` (fresh machine
   reaches passing --test with 4 approval prompts + browser/token logins); manual path
   (current "What you need" + relay-by-hand details) moved to **docs/setup-manual.md**; new
   "Where your config lives" section (~/.ktl/config.json paths, 0600/0700, what IS stored

@@ -37,8 +37,8 @@ Additions here:
 
 | Model | Weights on the TPU | Context | One stream | Many streams | Prefill | Run → URL | Engine |
 |-------|--------------------|---------|------------|--------------|---------|-----------|--------|
-| [Qwen3.8-27B](kaggle-llm-endpoint/qwen38-27b/) | bf16, no quantization | 262k | ~130 tok/s | ~540 tok/s at 8 | 10,300 tok/s | ~22 min | vllm-tpu + one patch |
-| [GLM-5.3-Flash](kaggle-llm-endpoint/glm53-flash/) (320B MoE) | 3-bit experts, int8 rest | 262k | ~64 tok/s | ~90 tok/s at 3 | ~1,600 tok/s | ~16 min | custom JAX engine |
+| [Qwen3.8-27B](launcher/qwen38-27b/) | bf16, no quantization | 262k | ~130 tok/s | ~540 tok/s at 8 | 10,300 tok/s | ~22 min | vllm-tpu + one patch |
+| [GLM-5.3-Flash](launcher/glm53-flash/) (320B MoE) | 3-bit experts, int8 rest | 262k | ~64 tok/s | ~90 tok/s at 3 | ~1,600 tok/s | ~16 min | custom JAX engine |
 
 Each model folder has a run-all Kaggle notebook, the kernel script behind it,
 and a README with the numbers and the how.
@@ -79,7 +79,7 @@ curl <ENDPOINT>/v1/chat/completions -H "Authorization: Bearer <KEY>" \
 ## Quick start
 
 ```bash
-cd kaggle-llm-endpoint
+cd launcher
 
 python launch.py setup
 ```
@@ -157,7 +157,7 @@ python launch.py env --restore opencode           # restore a client's pre-setup
 
 ```
 kaggle-llm-endpoint/                # repo root
-├── kaggle-llm-endpoint/            # launcher + per-model recipes
+├── launcher/                       # CLI launcher + per-model recipes
 │   ├── launch.py                   #   thin CLI dispatcher (entry point)
 │   ├── ktl_common.py               #   config file, keys, redaction, prompts, subprocess
 │   ├── ktl_serve.py                #   kernel build/push, relay registration, status/stop
@@ -303,13 +303,13 @@ points at the current boot.
 ## Local verification (no TPU needed)
 
 ```bash
-kaggle-llm-endpoint/glm53-flash/tools/verify_local.sh          # launcher check + kernel smoke test
-kaggle-llm-endpoint/glm53-flash/tools/verify_local.sh --full   # + engine unit tests (slow)
+launcher/glm53-flash/tools/verify_local.sh          # launcher check + kernel smoke test
+launcher/glm53-flash/tools/verify_local.sh --full   # + engine unit tests (slow)
 ```
 
 ## Adding a model
 
-One folder inside `kaggle-llm-endpoint/` named after the model: `README.md`,
+One folder inside `launcher/` named after the model: `README.md`,
 `kernel/` (serving script with the `__LAUNCHER_CONFIG__` line), `notebook/`,
 plus whatever the recipe needs. Then add an entry to `MODELS` in
 `ktl_common.py` (shared by serve, env, and setup).
