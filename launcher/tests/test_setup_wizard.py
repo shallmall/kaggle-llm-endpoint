@@ -110,13 +110,8 @@ case "$*" in
   *"login --device"*)
     echo "Attempting to login via OAuth Device Authorization Grant..."
     echo "To authorize Wrangler, please visit:"
-    echo "  https://dash.cloudflare.com/oauth2/device/verify?user_code=ABCDEF12"
-    echo "and enter the code:"
-    echo ""
-    echo "  ABCDEF12"
-    echo ""
-    echo "You have 5 minutes to approve this request."
-    echo "Opening a link in your default browser: https://dash.cloudflare.com/oauth2/device/verify?user_code=ABCDEF12"
+    echo "  https://dash.cloudflare.com/oauth2/device"
+    echo "and enter the code: ABCDEF12"
     if [ "${FAKE_DEVICE_FAIL:-0}" = "1" ]; then
       echo "Error: Timed out waiting for device verification." >&2
       exit 1
@@ -291,8 +286,7 @@ class TestCloudflareTokenAuth(WizardBase):
         for ln in self.record_lines("npx|"):
             self.assertNotIn("login", ln)
 
-    @mock.patch("ktl_setup.webbrowser.open")
-    def test_device_login_is_used_everywhere(self, _open):
+    def test_device_login_is_used_everywhere(self):
         """Even on a plain desktop with a display and no SSH, the wizard logs
         in with `wrangler login --device` — no detection, no plain login."""
         self.patch_serve_and_matrix()
@@ -302,8 +296,7 @@ class TestCloudflareTokenAuth(WizardBase):
             rc, out = self.run_setup(only="cloudflare")
         self.assertEqual(rc, 0, out)
         self.assertIn("using the DEVICE login (OAuth 2.0 device flow)", out)
-        self.assertIn("Open this URL in your browser (the code is already in it)", out)
-        self.assertIn("https://dash.cloudflare.com/oauth2/device/verify?user_code=ABCDEF12", out)
+        self.assertIn("https://dash.cloudflare.com/oauth2/device", out)
         self.assertIn("logged in as Fake Account", out)
         lines = "|".join(self.record_lines())
         self.assertIn("login --device", lines)
@@ -311,8 +304,7 @@ class TestCloudflareTokenAuth(WizardBase):
                  if "wrangler@4 login" in ln and "wrangler@4 login --device" not in ln]
         self.assertEqual(plain, [], lines)
 
-    @mock.patch("ktl_setup.webbrowser.open")
-    def test_device_login_fails_with_clear_message(self, _open):
+    def test_device_login_fails_with_clear_message(self):
         self.patch_serve_and_matrix()
         with mock.patch.dict(os.environ, {"FAKE_DEVICE_FAIL": "1"}):
             rc, out = self.run_setup(only="cloudflare")
@@ -374,6 +366,12 @@ class TestHappyPath(WizardBase):
         self.assertEqual(cfg["cloudflare"]["worker_name"], "kaggle-tpu-relay")
         self.assertEqual(len(cfg["secrets"]["client_api_key"]), 43)
         self.assertEqual(len(cfg["secrets"]["update_secret"]), 43)
+
+        # the summary prints the endpoint URL (paired with the key) so clients
+        # know exactly where to talk to and what to send
+        self.assertIn("endpoint   : https://fake-worker.fakeacct.workers.dev", out)
+        self.assertIn("clients use https://fake-worker.fakeacct.workers.dev/v1", out)
+        self.assertIn(f"key        : {ktl_common.mask(cfg['secrets']['client_api_key'])}", out)
 
         # TPU push called with the relay dict and stop_after_ready
         push.assert_called_once()
