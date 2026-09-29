@@ -129,56 +129,6 @@ class TestLegacyMigration(ConfigBase):
 
 
 # ---------------------------------------------------------------------------
-# Cloudflare credential file (cloudflare.env)
-# ---------------------------------------------------------------------------
-
-class TestCloudflareEnvFile(ConfigBase):
-    def test_save_roundtrip_0600(self):
-        p = C.save_cloudflare_env({"token": "tok_abc", "account_id": "acct_1"})
-        self.assertEqual(p, C.cloudflare_env_path())
-        self.assertTrue(p.exists())
-        if IS_POSIX:
-            self.assertEqual(stat.S_IMODE(p.stat().st_mode), 0o600)
-        self.assertEqual(C.load_cloudflare_env(),
-                         {"token": "tok_abc", "account_id": "acct_1"})
-
-    def test_save_requires_token(self):
-        with self.assertRaises(ValueError):
-            C.save_cloudflare_env({"account_id": "acct_1"})
-
-    def test_load_missing_and_tokenless_returns_empty(self):
-        self.assertEqual(C.load_cloudflare_env(), {})
-        self.ktl_home.mkdir(parents=True, exist_ok=True)
-        (self.ktl_home / "cloudflare.env").write_text(
-            "CLOUDFLARE_ACCOUNT_ID=acct_1\n")
-        self.assertEqual(C.load_cloudflare_env(), {})
-
-    def test_load_corrupt_returns_empty(self):
-        self.ktl_home.mkdir(parents=True, exist_ok=True)
-        (self.ktl_home / "cloudflare.env").write_text("\x00\x01garbage")
-        self.assertEqual(C.load_cloudflare_env(), {})
-
-    def test_load_skips_blank_and_unrecognized_lines(self):
-        self.ktl_home.mkdir(parents=True, exist_ok=True)
-        (self.ktl_home / "cloudflare.env").write_text(
-            "\nCLOUDFLARE_API_TOKEN= tok_x \nFOO=bar\n")
-        self.assertEqual(C.load_cloudflare_env(), {"token": "tok_x"})
-
-    def test_apply_sets_env_but_real_env_wins(self):
-        C.apply_cloudflare_env({"token": "tok_a", "account_id": "acct_a"})
-        self.assertEqual(os.environ.get("CLOUDFLARE_API_TOKEN"), "tok_a")
-        self.assertEqual(os.environ.get("CLOUDFLARE_ACCOUNT_ID"), "acct_a")
-        os.environ["CLOUDFLARE_API_TOKEN"] = "tok_real"
-        self.assertTrue(C.apply_cloudflare_env({"token": "tok_b"}))
-        self.assertEqual(os.environ.get("CLOUDFLARE_API_TOKEN"), "tok_real")
-        os.environ.pop("CLOUDFLARE_API_TOKEN", None)
-        os.environ.pop("CLOUDFLARE_ACCOUNT_ID", None)
-
-    def test_apply_no_token_returns_false(self):
-        self.assertFalse(C.apply_cloudflare_env({}))
-
-
-# ---------------------------------------------------------------------------
 # keys + redaction
 # ---------------------------------------------------------------------------
 

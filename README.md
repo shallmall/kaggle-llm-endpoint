@@ -144,14 +144,14 @@ python launch.py serve --model qwen --text-only --fast-start
 | Kaggle **username** (for kernel slugs) | Kaggle token / credentials (stay in `~/.kaggle/`) |
 | Worker name + permanent relay URL | Direct-session API key (changes per boot; in `~/.kaggle-tpu-lab.json`) |
 | `client_api_key` + `update_secret` (the two relay secrets) | Anything beyond the two relay secrets |
-| Per-step progress (`steps`) | Cloudflare API token (lives in `~/.ktl/cloudflare.env`) |
+| Per-step progress (`steps`) | |
 
-Cloudflare credentials are a special case: the wizard's browser login only works
-when your browser and this terminal share a machine (the OAuth callback returns
-to `localhost:8976`). On a VM / WSL / container you can choose **B) API token**
-and paste one instead — the wizard validates it and, with your OK, stores it in
-`~/.ktl/cloudflare.env` (`0600`, like `~/.kaggle/kaggle.json`). A plain
-`CLOUDFLARE_API_TOKEN` env var overrides the file either way.
+The `cloudflare` step uses the browser login (`wrangler login`). Its OAuth
+callback returns to `localhost:8976` on **this** terminal's machine, so on a
+VM/WSL you may need to forward it back to the machine with your browser:
+`ssh -L 8976:localhost:8976 <you>@<that-host>`. Alternatively run setup where
+your browser is (native Windows/macOS), or export `CLOUDFLARE_API_TOKEN`
+for a non-interactive login.
 
 Reset / rotate:
 ```bash

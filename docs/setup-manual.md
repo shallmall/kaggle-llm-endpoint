@@ -58,19 +58,16 @@ npx -y wrangler@4 deploy     # prints https://<name>.<acct>.workers.dev
 
 `wrangler login` uses an OAuth callback to `localhost:8976`, so it only works
 when your browser and this terminal are on the **same machine**. From a VM,
-WSL or container either port-forward back to the machine running the browser:
+WSL or container, forward the callback back to the machine with the browser:
 
 ```bash
 ssh -L 8976:localhost:8976 <you>@<machine-with-browser>
 ```
 
-…or skip the browser entirely: create an API token at
-<https://dash.cloudflare.com/profile/api-tokens> (Account > Workers Scripts,
-**Edit**) and either `export CLOUDFLARE_API_TOKEN=<token>`, or have the wizard
-store it for you — `python launch.py setup --only cloudflare`, then choose
-**B) API token**. The token is saved `0600` to `~/.ktl/cloudflare.env`
-(like `~/.kaggle/kaggle.json`); the wizard never puts it in `config.json`, and
-a real env var overrides the file.
+…or run the step where your browser is (native Windows/macOS), or export a
+token for a non-interactive login:
+`export CLOUDFLARE_API_TOKEN=<token>` (Account > Workers Scripts at
+<https://dash.cloudflare.com/profile/api-tokens>).
 
 Two secrets, **different random strings, ≥ 32 chars each** (e.g.
 `openssl rand -base64 32`). The wizard generates these for you; by hand:
