@@ -125,7 +125,7 @@ def push_and_watch(model_key, user, slug=None, relay=None, keepalive_min=480,
                    no_tools=False, text_only=False, verbose=False,
                    fast_start=False, streams=None, vision=None,
                    tunnel=None,
-                   watch=True, stop_after_ready=False):
+                   watch_progress=True, stop_after_ready=False):
     """Push the serving kernel and watch it come up. Returns the runtime state
     dict. ``stop_after_ready`` makes the watch loop return right after the
     READY banner (used by `setup` so the wizard can continue).
@@ -215,8 +215,7 @@ def push_and_watch(model_key, user, slug=None, relay=None, keepalive_min=480,
         "datasets; the endpoint is usually live ~22 min after the kernel starts.")
     say("Watching progress (Ctrl-C is safe — the server keeps running; "
         "`python launch.py status` re-attaches, `... stop` kills it).")
-    if watch:
-        watch_fn = watch
+    if watch_progress:
         watch(state["kernel"], topic, relay, model_key, model_cfg,
               stop_after_ready=stop_after_ready)
     return state
