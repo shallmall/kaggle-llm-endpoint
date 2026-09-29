@@ -420,9 +420,9 @@ def _step_cloudflare(ctx: Ctx, cfg: dict, args):
     print("No Cloudflare login found. Options:")
     print("  A) Browser login — works when this machine has a browser; the")
     print("     OAuth callback returns to localhost:8976 on THIS machine.")
-    print("  B) API token — works everywhere (VMs, WSL, containers); create at")
-    print("     https://dash.cloudflare.com/profile/api-tokens using")
-    print("     'Account > Workers Scripts' with Edit permissions.")
+    print("  B) API token — works everywhere (VMs, WSL, containers).")
+    print("     Direct link: https://dash.cloudflare.com/profile/api-tokens")
+    print("     (Account > Workers Scripts, Edit permission)")
     if _choose_login_method(ctx) == "token":
         who = _login_with_token(ctx)
     else:
